@@ -2,10 +2,11 @@ import UIKit
 import CoreML
 import Vision
 import AVFoundation
+import Speech
 
 class ViewController: UIViewController {
     
-    // MARK: - Properties (Keep your existing properties)
+    // MARK: - Properties
     private var videoCapture: VideoCapture!
     private let serialQueue = DispatchQueue(label: "com.shu223.coremlplayground.serialqueue")
     
@@ -17,15 +18,24 @@ class ViewController: UIViewController {
     private var selectedModel: MLModel?
     
     private var lastAPICallTime: CFTimeInterval = 0
-    private let apiCallInterval: CFTimeInterval = 30.0 // 30 seconds between API calls for more frequent updates
+    private let apiCallInterval: CFTimeInterval = 30.0
     private let apiKey = "fmFrMl3wHnB9SFnb8bzxNFpGCVE18Wcz"
     private let apiBaseURL = "https://api.fanar.qa/v1"
     
-    // Speech synthesis
+    // Speech synthesis and recognition
     private let speechSynthesizer = AVSpeechSynthesizer()
+    private let audioEngine = AVAudioEngine()
+    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    
+    // Vibration
+    private let feedbackGenerator = UIImpactFeedbackGenerator(style: .heavy)
     
     private var cropAndScaleOption: VNImageCropAndScaleOption = .scaleFit
     
+    @IBOutlet weak var microphoneButton: UIButton!
+    @IBOutlet weak var pause: UIButton!
     @IBOutlet private weak var previewView: UIView!
     @IBOutlet private weak var modelLabel: UILabel!
     @IBOutlet private weak var resultView: UIView!
@@ -34,12 +44,14 @@ class ViewController: UIViewController {
     @IBOutlet private weak var bbView: BoundingBoxView!
     @IBOutlet weak var cropAndScaleOptionSelector: UISegmentedControl!
     
-    // MARK: - ViewDidLoad and Lifecycle Methods
+    // MARK: - View Lifecycle
     override func viewDidLoad() {
         super.viewDidLoad()
+        view.bringSubviewToFront(microphoneButton)
+
         
-        // CRITICAL: Configure audio session for speech synthesis
-            configureAudioSession()
+        configureAudioSession()
+        setupSpeechRecognition()
         
         let spec = VideoSpec(fps: preferredFps, size: videoSize)
         let frameInterval = 1.0 / Double(preferredFps)
@@ -76,9 +88,13 @@ class ViewController: UIViewController {
             selectModel(url: firstModel)
         }
         
-        // scaleFill
         cropAndScaleOptionSelector.selectedSegmentIndex = 2
         updateCropAndScaleOption()
+        
+        // Setup microphone button long press gesture
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleMicrophoneLongPress(_:)))
+        longPress.minimumPressDuration = 0.5
+        microphoneButton.addGestureRecognizer(longPress)
     }
     
     override func viewWillAppear(_ animated: Bool) {
@@ -104,8 +120,140 @@ class ViewController: UIViewController {
         super.didReceiveMemoryWarning()
     }
     
-    // MARK: - Private Methods
     
+    // MARK: - Speech Recognition
+    private func setupSpeechRecognition() {
+        SFSpeechRecognizer.requestAuthorization { authStatus in
+            DispatchQueue.main.async {
+                switch authStatus {
+                case .authorized:
+                    print("Speech recognition authorized")
+                case .denied:
+                    print("User denied access to speech recognition")
+                case .restricted:
+                    print("Speech recognition restricted on this device")
+                case .notDetermined:
+                    print("Speech recognition not yet authorized")
+                @unknown default:
+                    fatalError()
+                }
+            }
+        }
+    }
+    
+    @objc private func handleMicrophoneLongPress(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            microphoneButton.isHighlighted = true
+            startListening()
+        case .ended, .cancelled, .failed:
+            microphoneButton.isHighlighted = false
+            stopListening()
+        default:
+            break
+        }
+    }
+    
+    private func startListening() {
+        // Stop any current speech
+        if speechSynthesizer.isSpeaking {
+            speechSynthesizer.stopSpeaking(at: .immediate)
+        }
+        
+        // Configure audio session for recording
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: .duckOthers)
+            try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("Audio session setup error: \(error)")
+            return
+        }
+        
+        // Cancel any existing recognition task
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        
+        // Setup audio engine
+        let inputNode = audioEngine.inputNode
+        inputNode.removeTap(onBus: 0)
+        
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            self.recognitionRequest?.append(buffer)
+        }
+        
+        // Prepare recognition request
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let recognitionRequest = recognitionRequest else {
+            fatalError("Unable to create recognition request")
+        }
+        
+        recognitionRequest.shouldReportPartialResults = true
+        
+        // Start recognition task
+        recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+            guard let self = self else { return }
+            
+            if let result = result {
+                let transcript = result.bestTranscription.formattedString
+                print("User said: \(transcript)")
+                
+                // If this is the final result, send to API
+                if result.isFinal {
+                    self.sendVoicePromptToAPI(transcript: transcript)
+                }
+            }
+            
+            if error != nil {
+                self.audioEngine.stop()
+                inputNode.removeTap(onBus: 0)
+                self.recognitionRequest = nil
+                self.recognitionTask = nil
+            }
+        }
+        
+        // Start audio engine
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            print("Listening...")
+        } catch {
+            print("Audio engine start error: \(error)")
+        }
+    }
+    
+    private func stopListening() {
+        audioEngine.stop()
+        recognitionRequest?.endAudio()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        
+        // Restore audio session for playback
+        configureAudioSession()
+    }
+    
+    private func sendVoicePromptToAPI(transcript: String) {
+        print("Sending voice prompt to API: \(transcript)")
+        
+        let llmRequest: [String: Any] = [
+            "model": "Fanar-Oryx-IVU-1",
+            "messages": [
+                [
+                    "role": "system",
+                    "content": "You are an advanced navigation assistant for visually impaired users. Respond to the user's query with precise, actionable guidance. Keep responses under 30 words."
+                ],
+                [
+                    "role": "user",
+                    "content": transcript
+                ]
+            ],
+            "temperature": 0.2,
+            "max_tokens": 100
+        ]
+        
+        performVisionLanguageAPICall(requestData: llmRequest)
+    }
+    
+    // MARK: - Model Selection
     private func showActionSheet() {
         let alert = UIAlertController(title: "Models", message: "Choose a model", preferredStyle: .actionSheet)
         let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
@@ -133,8 +281,7 @@ class ViewController: UIViewController {
         }
     }
     
-    // MARK: - Enhanced Model Processing with Vision-Language Integration
-    
+    // MARK: - Model Processing
     private func runModel(imageBuffer: CVPixelBuffer, timestamp: CMTime) {
         guard let model = selectedVNModel else {
             print("❌ No model selected")
@@ -149,7 +296,6 @@ class ViewController: UIViewController {
                 return
             }
             
-            // Object Detection Results
             if #available(iOS 12.0, *), let results = request.results as? [VNRecognizedObjectObservation] {
                 print("🎯 OBJECT DETECTION RESULTS - Model: \(self.modelLabel.text ?? "Unknown")")
                 self.processObjectDetectionObservations(results, imageBuffer: imageBuffer, timestamp: timestamp)
@@ -166,11 +312,8 @@ class ViewController: UIViewController {
         }
     }
     
-    // MARK: - Enhanced Object Detection Processing with Detailed Analysis
-    
     @available(iOS 12.0, *)
     private func processObjectDetectionObservations(_ results: [VNRecognizedObjectObservation], imageBuffer: CVPixelBuffer, timestamp: CMTime) {
-        
         print("🎯 Detected \(results.count) objects:")
         
         var detectionData: [[String: Any]] = []
@@ -181,7 +324,6 @@ class ViewController: UIViewController {
         for (index, result) in results.enumerated() {
             let boundingBox = result.boundingBox
             
-            // Convert to pixel coordinates
             let imageWidth = CVPixelBufferGetWidth(imageBuffer)
             let imageHeight = CVPixelBufferGetHeight(imageBuffer)
             let screenX = boundingBox.origin.x * CGFloat(imageWidth)
@@ -189,15 +331,20 @@ class ViewController: UIViewController {
             let screenWidth = boundingBox.size.width * CGFloat(imageWidth)
             let screenHeight = boundingBox.size.height * CGFloat(imageHeight)
             
-            // Enhanced position analysis
             let (horizontalPos, verticalPos, distance, urgency) = analyzeObjectPosition(boundingBox: boundingBox)
+            
+            // Trigger vibration for high urgency objects
+            if urgency == "HIGH - directly in path" {
+                DispatchQueue.main.async {
+                    self.feedbackGenerator.impactOccurred()
+                }
+            }
             
             print("\n🔸 Object \(index + 1):")
             print("   📍 Position: \(horizontalPos), \(verticalPos)")
             print("   📏 Distance: \(distance)")
             print("   ⚠️ Urgency: \(urgency)")
             
-            // Process labels with enhanced categorization
             var labels: [[String: Any]] = []
             var topLabel = "unknown"
             var topConfidence: Float = 0
@@ -217,7 +364,6 @@ class ViewController: UIViewController {
                 ])
             }
             
-            // Enhanced obstacle categorization
             let obstacleInfo = "\(topLabel) at \(horizontalPos) (\(distance))"
             
             if isMovingVehicle(topLabel) || isDangerousObject(topLabel) {
@@ -228,7 +374,6 @@ class ViewController: UIViewController {
                 environmentalHazards.append("⚠️ \(obstacleInfo) - CAUTION NEEDED")
             }
             
-            // Structure enhanced data for API
             let objectData: [String: Any] = [
                 "id": index,
                 "type": "detection",
@@ -261,7 +406,6 @@ class ViewController: UIViewController {
             detectionData.append(objectData)
         }
         
-        // Check if it's time for Vision-Language API call
         let currentTime = CACurrentMediaTime()
         if currentTime - lastAPICallTime >= apiCallInterval {
             lastAPICallTime = currentTime
@@ -283,7 +427,6 @@ class ViewController: UIViewController {
             )
         }
         
-        // Update UI
         bbView.observations = results
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -293,8 +436,7 @@ class ViewController: UIViewController {
         }
     }
     
-    // MARK: - Enhanced Object Analysis Functions
-    
+    // MARK: - Object Analysis
     private func analyzeObjectPosition(boundingBox: CGRect) -> (horizontal: String, vertical: String, distance: String, urgency: String) {
         let x = boundingBox.origin.x
         let y = boundingBox.origin.y
@@ -302,7 +444,6 @@ class ViewController: UIViewController {
         let height = boundingBox.size.height
         let area = width * height
         
-        // More precise horizontal positioning
         let horizontalPos: String
         if x < 0.15 {
             horizontalPos = "far left side"
@@ -320,7 +461,6 @@ class ViewController: UIViewController {
             horizontalPos = "far right side"
         }
         
-        // Vertical positioning
         let verticalPos: String
         if y < 0.2 {
             verticalPos = "ground level"
@@ -332,7 +472,6 @@ class ViewController: UIViewController {
             verticalPos = "overhead"
         }
         
-        // Distance estimation based on object size and position
         let distance: String
         if area > 0.3 {
             distance = "very close"
@@ -344,7 +483,6 @@ class ViewController: UIViewController {
             distance = "far away"
         }
         
-        // Urgency assessment
         let urgency: String
         if area > 0.2 && x > 0.3 && x < 0.7 && y < 0.5 {
             urgency = "HIGH - directly in path"
@@ -385,8 +523,7 @@ class ViewController: UIViewController {
         return "GENERAL_OBJECT"
     }
     
-    // MARK: - Enhanced Vision-Language API Integration
-    
+    // MARK: - API Integration
     private func sendToVisionLanguageAPI(
         detectionData: [[String: Any]],
         imageData: Data?,
@@ -397,7 +534,6 @@ class ViewController: UIViewController {
     ) {
         print("🔄 Preparing Vision-Language API call...")
         
-        // Create enhanced navigation prompt with image
         let prompt = createEnhancedNavigationPrompt(
             detectionData: detectionData,
             criticalObstacles: criticalObstacles,
@@ -405,7 +541,6 @@ class ViewController: UIViewController {
             environmentalHazards: environmentalHazards
         )
         
-        // Prepare messages with image and text
         var messageContent: [[String: Any]] = [
             [
                 "type": "text",
@@ -413,7 +548,6 @@ class ViewController: UIViewController {
             ]
         ]
         
-        // Add image if available
         if let imageData = imageData {
             let imageBase64 = imageData.base64EncodedString()
             let imageB64Url = "data:image/jpeg;base64,\(imageBase64)"
@@ -426,9 +560,8 @@ class ViewController: UIViewController {
             ])
         }
         
-        // Prepare the enhanced LLM request with vision capabilities
         let llmRequest: [String: Any] = [
-            "model": "Fanar-Oryx-IVU-1", // Vision-understanding model
+            "model": "Fanar-Oryx-IVU-1",
             "messages": [
                 [
                     "role": "system",
@@ -439,11 +572,10 @@ class ViewController: UIViewController {
                     "content": messageContent
                 ]
             ],
-            "temperature": 0.2, // Lower temperature for more consistent responses
+            "temperature": 0.2,
             "max_tokens": 100
         ]
         
-        // Make the API call
         performVisionLanguageAPICall(requestData: llmRequest)
     }
     
@@ -453,7 +585,6 @@ class ViewController: UIViewController {
         pathBlockers: [String],
         environmentalHazards: [String]
     ) -> String {
-        
         var prompt = "NAVIGATION ANALYSIS FOR VISUALLY IMPAIRED USER\n\n"
         
         prompt += "OBJECT DETECTION SUMMARY:\n"
@@ -517,7 +648,6 @@ class ViewController: UIViewController {
         return prompt
     }
     
-    // MARK: - Enhanced API Response Handling with Better Audio
     private func performVisionLanguageAPICall(requestData: [String: Any]) {
         guard let url = URL(string: "\(apiBaseURL)/chat/completions") else {
             print("❌ Invalid API URL")
@@ -543,7 +673,6 @@ class ViewController: UIViewController {
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             if let error = error {
                 print("❌ API call failed: \(error)")
-                // Provide fallback audio response
                 self?.speakText("Navigation system temporarily unavailable, proceeding with caution.")
                 return
             }
@@ -562,7 +691,6 @@ class ViewController: UIViewController {
                         print("❌ API Error Response: \(responseString)")
                     }
                     
-                    // Provide fallback audio response
                     self?.speakText("Navigation analysis complete, path assessed.")
                     return
                 }
@@ -577,7 +705,6 @@ class ViewController: UIViewController {
                        let message = firstChoice["message"] as? [String: Any],
                        let content = message["content"] as? String {
                         
-                        // Clean and enhance the response
                         let cleanedContent = content
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                             .replacingOccurrences(of: "\n", with: " ")
@@ -585,14 +712,12 @@ class ViewController: UIViewController {
                         
                         print("🗣️ Enhanced Navigation Guidance: \(cleanedContent)")
                         
-                        // CRITICAL: Speak the response immediately on main thread
                         self?.speakText(cleanedContent)
                         
                     } else {
                         print("❌ Unexpected response format")
                         print("Full response: \(jsonResponse)")
                         
-                        // Provide fallback audio response
                         self?.speakText("Path analysis complete, proceeding forward carefully.")
                     }
                 }
@@ -602,14 +727,12 @@ class ViewController: UIViewController {
                     print("Raw response: \(responseString)")
                 }
                 
-                // Provide fallback audio response
                 self?.speakText("Navigation guidance ready, path ahead analyzed.")
             }
         }.resume()
     }
     
     // MARK: - Helper Functions
-    
     private func convertPixelBufferToImageData(_ pixelBuffer: CVPixelBuffer) -> Data? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let context = CIContext()
@@ -620,21 +743,14 @@ class ViewController: UIViewController {
         }
         
         let uiImage = UIImage(cgImage: cgImage)
-        // Optimize image for API - balance between quality and size
         return uiImage.jpegData(compressionQuality: 0.7)
     }
     
-    // MARK: - Audio Session Configuration
     private func configureAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            
-            // Set category to playback to ensure audio plays even in silent mode
             try audioSession.setCategory(.playback, mode: .default, options: [.duckOthers])
-            
-            // Activate the audio session
             try audioSession.setActive(true)
-            
             print("✅ Audio session configured successfully")
         } catch {
             print("❌ Failed to configure audio session: \(error)")
@@ -644,22 +760,18 @@ class ViewController: UIViewController {
     private func speakText(_ text: String) {
         print("🔊 Attempting to speak: \(text)")
         
-        // CRITICAL: Ensure we're on the main thread for UI and audio operations
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // Stop any current speech
             if self.speechSynthesizer.isSpeaking {
                 self.speechSynthesizer.stopSpeaking(at: .immediate)
             }
             
-            // Create utterance with enhanced settings
             let utterance = AVSpeechUtterance(string: text)
-            utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.8 // Slightly slower
+            utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.8
             utterance.volume = 1.0
             utterance.pitchMultiplier = 1.0
             
-            // Try to use a high-quality voice
             if let voice = AVSpeechSynthesisVoice(language: "en-US") {
                 utterance.voice = voice
                 print("🎤 Using voice: \(voice.name)")
@@ -667,14 +779,11 @@ class ViewController: UIViewController {
                 print("⚠️ Using default voice")
             }
             
-            // Add delegate to track speech status
             self.speechSynthesizer.delegate = self
-            
             print("🔊 Starting speech synthesis...")
             self.speechSynthesizer.speak(utterance)
         }
     }
-
     
     private func updateCropAndScaleOption() {
         let selectedIndex = cropAndScaleOptionSelector.selectedSegmentIndex
@@ -683,7 +792,6 @@ class ViewController: UIViewController {
     }
     
     // MARK: - Actions
-    
     @IBAction func modelBtnTapped(_ sender: UIButton) {
         showActionSheet()
     }
@@ -708,14 +816,12 @@ extension ViewController: AVSpeechSynthesizerDelegate {
     }
     
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
-        // Optional: Track speech progress
         let substring = (utterance.speechString as NSString).substring(with: characterRange)
         print("🗣️ Speaking: \(substring)")
     }
 }
 
 // MARK: - Extensions
-
 extension ViewController: UIPopoverPresentationControllerDelegate {
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
         if segue.identifier == "popover" {

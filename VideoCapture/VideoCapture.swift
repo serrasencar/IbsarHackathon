@@ -1,13 +1,5 @@
-//
-//  VideoCapture.swift
-//
-//  Created by Shuichi Tsutsumi on 4/3/16.
-//  Copyright © 2016 Shuichi Tsutsumi. All rights reserved.
-//
-
 import AVFoundation
 import Foundation
-
 
 struct VideoSpec {
     var fps: Int32?
@@ -90,18 +82,6 @@ class VideoCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCa
             }
             captureSession.addOutput(audioDataOutput)
         }
-
-        // setup asset writer
-        do {
-        }
-        /*
-
-        // Asset Writer
-        self.assetWriterManager = [[TTMAssetWriterManager alloc] initWithVideoDataOutput:videoDataOutput
-                                                                         audioDataOutput:audioDataOutput
-                                                                           preferredSize:preferredSize
-                                                                                mirrored:(cameraType == CameraTypeFront)];
-         */
     }
     
     func startCapture() {
@@ -133,7 +113,6 @@ class VideoCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCa
     // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
     
     func captureOutput(_ output: AVCaptureOutput, didDrop sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-//        print("\(self.classForCoder)/" + #function)
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -150,5 +129,3 @@ class VideoCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCa
         }
     }
 }
-
-

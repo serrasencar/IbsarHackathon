@@ -7,9 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3257287A2E098A2000D14773 /* loginViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 325728792E098A1600D14773 /* loginViewController.swift */; };
+		32BD548D2E0B370100C11FA6 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32BD548C2E0B370100C11FA6 /* ViewController.swift */; };
 		8A243AEA20D99188005947D6 /* ModelDescriptionViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A243AE920D99188005947D6 /* ModelDescriptionViewController.swift */; };
 		8A413B9120D2205F00A761EC /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A413B9020D2205F00A761EC /* AppDelegate.swift */; };
-		8A413B9320D2205F00A761EC /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A413B9220D2205F00A761EC /* ViewController.swift */; };
 		8A413B9620D2205F00A761EC /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 8A413B9420D2205F00A761EC /* Main.storyboard */; };
 		8A413B9820D2206100A761EC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8A413B9720D2206100A761EC /* Assets.xcassets */; };
 		8A413B9B20D2206100A761EC /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 8A413B9920D2206100A761EC /* LaunchScreen.storyboard */; };
@@ -21,10 +22,11 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		325728792E098A1600D14773 /* loginViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = loginViewController.swift; sourceTree = "<group>"; };
+		32BD548C2E0B370100C11FA6 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
 		8A243AE920D99188005947D6 /* ModelDescriptionViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDescriptionViewController.swift; sourceTree = "<group>"; };
 		8A413B8D20D2205F00A761EC /* MLModelCamera.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MLModelCamera.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8A413B9020D2205F00A761EC /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		8A413B9220D2205F00A761EC /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
 		8A413B9520D2205F00A761EC /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		8A413B9720D2206100A761EC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8A413B9A20D2206100A761EC /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
@@ -68,14 +70,15 @@
 		8A413B8F20D2205F00A761EC /* MLModelCamera */ = {
 			isa = PBXGroup;
 			children = (
+				325728792E098A1600D14773 /* loginViewController.swift */,
 				8A413B9C20D2206100A761EC /* Info.plist */,
 				8A413B9720D2206100A761EC /* Assets.xcassets */,
 				8A413B9920D2206100A761EC /* LaunchScreen.storyboard */,
 				8A413B9420D2205F00A761EC /* Main.storyboard */,
 				8A413B9020D2205F00A761EC /* AppDelegate.swift */,
-				8A413B9220D2205F00A761EC /* ViewController.swift */,
 				8A243AE920D99188005947D6 /* ModelDescriptionViewController.swift */,
 				8AEC912B24273FD70014E67B /* BoundingBoxView.swift */,
+				32BD548C2E0B370100C11FA6 /* ViewController.swift */,
 			);
 			path = MLModelCamera;
 			sourceTree = "<group>";
@@ -166,10 +169,11 @@
 			files = (
 				8A413BA720D221D500A761EC /* VideoCapture.swift in Sources */,
 				8AEC912C24273FD70014E67B /* BoundingBoxView.swift in Sources */,
-				8A413B9320D2205F00A761EC /* ViewController.swift in Sources */,
 				8A413B9120D2205F00A761EC /* AppDelegate.swift in Sources */,
+				3257287A2E098A2000D14773 /* loginViewController.swift in Sources */,
 				8A413BA820D221D500A761EC /* AVCaptureDevice+Extension.swift in Sources */,
 				8A413BA620D221D500A761EC /* VideoCameraType.swift in Sources */,
+				32BD548D2E0B370100C11FA6 /* ViewController.swift in Sources */,
 				8A243AEA20D99188005947D6 /* ModelDescriptionViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -319,14 +323,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = JKDMU6B846;
+				DEVELOPMENT_TEAM = 3UH8L253BW;
 				INFOPLIST_FILE = MLModelCamera/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = MLModelCamera;
+				PRODUCT_BUNDLE_IDENTIFIER = MLModelCameraDima;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -338,14 +342,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = JKDMU6B846;
+				DEVELOPMENT_TEAM = 3UH8L253BW;
 				INFOPLIST_FILE = MLModelCamera/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = MLModelCamera;
+				PRODUCT_BUNDLE_IDENTIFIER = MLModelCameraDima;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
