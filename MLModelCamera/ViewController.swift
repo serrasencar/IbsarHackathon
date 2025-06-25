@@ -8,6 +8,8 @@ class ViewController: UIViewController {
     
     // MARK: - Properties
     private var videoCapture: VideoCapture!
+    private var latestCapturedImageData: Data?
+
     private let serialQueue = DispatchQueue(label: "com.shu223.coremlplayground.serialqueue")
     
     private let videoSize = CGSize(width: 1280, height: 720)
@@ -200,7 +202,7 @@ class ViewController: UIViewController {
                 
                 // If this is the final result, send to API
                 if result.isFinal {
-                    self.sendVoicePromptToAPI(transcript: transcript)
+                    self.sendVoicePromptToAPI(transcript: transcript, imageData: self.latestCapturedImageData)
                 }
             }
             
@@ -221,7 +223,7 @@ class ViewController: UIViewController {
             print("Audio engine start error: \(error)")
         }
     }
-    
+
     private func stopListening() {
         audioEngine.stop()
         recognitionRequest?.endAudio()
@@ -231,8 +233,36 @@ class ViewController: UIViewController {
         configureAudioSession()
     }
     
-    private func sendVoicePromptToAPI(transcript: String) {
+    private func sendVoicePromptToAPI(transcript: String, imageData: Data? = nil) {
         print("Sending voice prompt to API: \(transcript)")
+        
+        // Validate transcript
+        guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            print("❌ Empty transcript, not sending to API")
+            speakText("I didn't catch that, please try again.")
+            return
+        }
+        
+        // Build the message content
+        var messageContent: [[String: Any]] = [
+            [
+                "type": "text",
+                "text": transcript
+            ]
+        ]
+        
+        // If image data is provided, attach as base64
+        if let imageData = imageData {
+            let imageBase64 = imageData.base64EncodedString()
+            let imageB64Url = "data:image/jpeg;base64,\(imageBase64)"
+            
+            messageContent.append([
+                "type": "image_url",
+                "image_url": [
+                    "url": imageB64Url
+                ]
+            ])
+        }
         
         let llmRequest: [String: Any] = [
             "model": "Fanar-Oryx-IVU-1",
@@ -243,16 +273,120 @@ class ViewController: UIViewController {
                 ],
                 [
                     "role": "user",
-                    "content": transcript
+                    "content": messageContent
                 ]
             ],
             "temperature": 0.2,
             "max_tokens": 100
         ]
         
-        performVisionLanguageAPICall(requestData: llmRequest)
+        performVoiceAPICall(requestData: llmRequest)
     }
-    
+
+
+
+    private func performVoiceAPICall(requestData: [String: Any]) {
+        guard let url = URL(string: "\(apiBaseURL)/chat/completions") else {
+            print("❌ Invalid API URL")
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30.0
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestData)
+            print("📤 Voice request payload size: \(request.httpBody?.count ?? 0) bytes")
+            
+            // Log the actual request being sent
+            if let debugData = try? JSONSerialization.data(withJSONObject: requestData, options: .prettyPrinted),
+               let debugString = String(data: debugData, encoding: .utf8) {
+                print("📋 Voice request: \(debugString)")
+            }
+            
+        } catch {
+            print("❌ Failed to serialize voice request data: \(error)")
+            speakText("Voice processing error, please try again.")
+            return
+        }
+        
+        print("📤 Sending Voice API request...")
+        
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            if let error = error {
+                print("❌ Voice API call failed: \(error)")
+                self?.speakText("Voice service temporarily unavailable.")
+                return
+            }
+            
+            guard let data = data else {
+                print("❌ No data received from voice API")
+                self?.speakText("No response received, please try again.")
+                return
+            }
+            
+            if let httpResponse = response as? HTTPURLResponse {
+                print("📡 Voice API Response Status: \(httpResponse.statusCode)")
+                
+                if httpResponse.statusCode != 200 {
+                    if let responseString = String(data: data, encoding: .utf8) {
+                        print("❌ Voice API Error Response: \(responseString)")
+                    }
+                    
+                    switch httpResponse.statusCode {
+                    case 400:
+                        print("❌ Bad Request - Invalid voice request format")
+                    case 401:
+                        print("❌ Unauthorized - Check API key")
+                    case 500:
+                        print("❌ Internal server error on voice request")
+                    default:
+                        break
+                    }
+                    
+                    self?.speakText("Voice processing error, please try again.")
+                    return
+                }
+            }
+            
+            do {
+                if let jsonResponse = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    print("📥 Voice API Response received")
+                    
+                    if let choices = jsonResponse["choices"] as? [[String: Any]],
+                       let firstChoice = choices.first,
+                       let message = firstChoice["message"] as? [String: Any],
+                       let content = message["content"] as? String {
+                        
+                        let cleanedContent = content
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .replacingOccurrences(of: "\n", with: " ")
+                            .replacingOccurrences(of: "  ", with: " ")
+                        
+                        print("🗣️ Voice Response: \(cleanedContent)")
+                        self?.speakText(cleanedContent)
+                        
+                    } else {
+                        print("❌ Unexpected voice response format")
+                        if let debugData = try? JSONSerialization.data(withJSONObject: jsonResponse, options: .prettyPrinted),
+                           let debugString = String(data: debugData, encoding: .utf8) {
+                            print("Full response: \(debugString)")
+                        }
+                        self?.speakText("Response received but couldn't understand format.")
+                    }
+                }
+            } catch {
+                print("❌ Failed to parse voice API response: \(error)")
+                if let responseString = String(data: data, encoding: .utf8) {
+                    print("Raw voice response: \(responseString)")
+                }
+                self?.speakText("Voice processing complete.")
+            }
+        }.resume()
+    }
     // MARK: - Model Selection
     private func showActionSheet() {
         let alert = UIAlertController(title: "Models", message: "Choose a model", preferredStyle: .actionSheet)
@@ -333,12 +467,13 @@ class ViewController: UIViewController {
             
             let (horizontalPos, verticalPos, distance, urgency) = analyzeObjectPosition(boundingBox: boundingBox)
             
-            // Trigger vibration for high urgency objects
-            if urgency == "HIGH - directly in path" {
+            // Trigger vibration for high urgency OR very close objects
+            if urgency == "HIGH - directly in path" || distance == "very close" {
                 DispatchQueue.main.async {
                     self.feedbackGenerator.impactOccurred()
                 }
             }
+
             
             print("\n🔸 Object \(index + 1):")
             print("   📍 Position: \(horizontalPos), \(verticalPos)")
@@ -417,6 +552,7 @@ class ViewController: UIViewController {
             print("⚠️ Environmental Hazards: \(environmentalHazards.count)")
             
             let imageData = convertPixelBufferToImageData(imageBuffer)
+            self.latestCapturedImageData = imageData  // ✅ Save for other use (like voice prompt)
             sendToVisionLanguageAPI(
                 detectionData: detectionData,
                 imageData: imageData,
