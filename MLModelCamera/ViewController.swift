@@ -54,16 +54,18 @@ class ViewController: UIViewController {
     
     // MARK: - View Lifecycle
     override func viewDidLoad() {
-    
-
-        speechRecognizer = SFSpeechRecognizer(locale: isArabicMode ? Locale(identifier: "ar-SA") : Locale(identifier: "en-US"))
+        isArabicMode = UserDefaults.standard.bool(forKey: "isArabicMode")
+        print("🌍 Current language mode: \(isArabicMode ? "Arabic" : "English")")
         
+        
+    
 
         super.viewDidLoad()
         view.bringSubviewToFront(microphoneButton)
+       
 
-        speechRecognizer = SFSpeechRecognizer(locale: isArabicMode ? Locale(identifier: "ar-SA") : Locale(identifier: "en-US"))
 
+     
 
         configureAudioSession()
         setupSpeechRecognition()
@@ -113,7 +115,7 @@ class ViewController: UIViewController {
     }
     
     override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
+
         guard let videoCapture = videoCapture else {return}
         videoCapture.startCapture()
     }
@@ -520,6 +522,8 @@ class ViewController: UIViewController {
             let screenHeight = boundingBox.size.height * CGFloat(imageHeight)
             
             let analysisResult = analyzeObjectPosition(boundingBox: boundingBox)
+         
+
             
             // Trigger vibration for high urgency OR very close objects
             if analysisResult.urgency.contains("IMMEDIATE") || analysisResult.distance == "very close" {
@@ -537,6 +541,15 @@ class ViewController: UIViewController {
             var labels: [[String: Any]] = []
             var topLabel = "unknown"
             var topConfidence: Float = 0
+            
+            if analysisResult.urgency.contains("IMMEDIATE") ||
+               analysisResult.distance == "very close" ||
+               isMovingVehicle(topLabel) {
+                DispatchQueue.main.async {
+                    self.feedbackGenerator.impactOccurred()
+                }
+            }
+
             
             for (labelIndex, label) in result.labels.enumerated() {
                 let confidence = label.confidence * 100
@@ -754,10 +767,13 @@ class ViewController: UIViewController {
         criticalObstacles: [String],
         pathBlockers: [String],
         environmentalHazards: [String],
-        isArabicMode: Bool = false  // Add this parameter
+        isArabicMode: Bool
     ) {
+        print("🌍 Current language mode: \(isArabicMode ? "Arabic" : "English")")
+
         print("🔄 Preparing Vision-Language API call...")
-        
+
+        // Build enhanced prompt
         let prompt = createEnhancedNavigationPrompt(
             detectionData: detectionData,
             criticalObstacles: criticalObstacles,
@@ -765,18 +781,20 @@ class ViewController: UIViewController {
             environmentalHazards: environmentalHazards,
             isArabicMode: isArabicMode
         )
-        
+
+        // Start with detection data (text)
         var messageContent: [[String: Any]] = [
             [
                 "type": "text",
                 "text": prompt
             ]
         ]
-        
-        if let imageData = imageData {
+
+        // Only attach image if recent
+        let timeSinceLastCapture = CACurrentMediaTime() - lastAPICallTime
+        if timeSinceLastCapture < 3.0, let imageData = imageData {
             let imageBase64 = imageData.base64EncodedString()
             let imageB64Url = "data:image/jpeg;base64,\(imageBase64)"
-            
             messageContent.append([
                 "type": "image_url",
                 "image_url": [
@@ -784,14 +802,13 @@ class ViewController: UIViewController {
                 ]
             ])
         }
-        
-        // Set system prompt content based on language
+
+        // NEW: Improved system prompt
         let systemPromptContent = isArabicMode ? """
-        أنت مساعد ملاحة متقدم للمستخدمين ضعاف البصر. قم بتحليل بيانات كشف الكائنات والصورة الفعلية لتقديم إرشادات ملاحة دقيقة وقابلة للتنفيذ. كن محددًا بشأن العقبات، مواقعها الدقيقة، ومسارات التنقل الآمنة. اجعل الردود أقل من 30 كلمة لكنها دقيقة جدًا حول العقبات الموجودة ومواقعها.
-        """ : """
-        You are an advanced navigation assistant for visually impaired users. Analyze both the object detection data AND the actual image to provide precise, actionable navigation guidance. Be specific about obstacles, their exact locations, and safe navigation paths. Keep responses under 30 words but be very specific about what obstacles exist and where.
-        """
-        
+    أنت مساعد ملاحة للمكفوفين. أولاً، صف البيئة المحيطة بناءً على الكائنات المكتشفة (مثل "شجرة أمامك على بعد ٣ أمتار"). ثم، قدم إرشادات واضحة ("اتجه يساراً ٣ خطوات ثم تابع للأمام"). لا تعتمد على الصورة إلا كمصدر داعم. لا تتجاوز ٣٥ كلمة.
+    """ : """
+    You are a navigation assistant for blind users. First describe the scene using detected objects (e.g., “a car 3 meters ahead on your right”). Then guide the user clearly (e.g., “step 2 meters left”). Use the image only as secondary context. Keep it under 35 words.
+    """
 
         let llmRequest: [String: Any] = [
             "model": "Fanar-Oryx-IVU-1",
@@ -808,10 +825,11 @@ class ViewController: UIViewController {
             "temperature": 0.2,
             "max_tokens": 100
         ]
-        
-        
+
+        // Perform the API call
         performVisionLanguageAPICall(requestData: llmRequest)
     }
+
 
     
     // MARK: - Enhanced Navigation Prompt with Spatial Intelligence
@@ -820,7 +838,7 @@ class ViewController: UIViewController {
         criticalObstacles: [String],
         pathBlockers: [String],
         environmentalHazards: [String],
-        isArabicMode: Bool = false
+        isArabicMode: Bool
     ) -> String {
         // Header
         var prompt = isArabicMode ?

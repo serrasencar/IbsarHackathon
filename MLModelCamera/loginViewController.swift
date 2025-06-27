@@ -56,19 +56,35 @@ class loginViewController: UIViewController {
     }
 
     private func setupLanguageMenu() {
-        let arabic = UIAction(title: "Arabic") { _ in
-            self.isArabicMode = true
+        // Load previously saved language preference
+        let isArabic = UserDefaults.standard.bool(forKey: "isArabicMode")
+
+        // Create Arabic and English actions with selection states
+        let arabic = UIAction(title: "Arabic", state: isArabic ? .on : .off) { _ in
+            UserDefaults.standard.set(true, forKey: "isArabicMode")
             self.language.setTitle("Arabic", for: .normal)
+            self.isArabicMode = true
+            print("🌍 Arabic selected")
         }
 
-        let english = UIAction(title: "English") { _ in
-            self.isArabicMode = false
+        let english = UIAction(title: "English", state: isArabic ? .off : .on) { _ in
+            UserDefaults.standard.set(false, forKey: "isArabicMode")
             self.language.setTitle("English", for: .normal)
+            self.isArabicMode = false
+            print("🌍 English selected")
         }
 
-        language.menu = UIMenu(title: "Select Language", children: [arabic, english])
+        // Set up the language menu with single selection mode
+        let menu = UIMenu(title: "Select Language", options: .singleSelection, children: [arabic, english])
+        language.menu = menu
         language.showsMenuAsPrimaryAction = true
+
+        // Update button title on load
+        self.language.setTitle(isArabic ? "Arabic" : "English", for: .normal)
+        self.isArabicMode = isArabic
     }
+
+    
 
 
     @IBAction func loginButtonTapped(_ sender: UIButton) {
@@ -96,12 +112,18 @@ class loginViewController: UIViewController {
         performSegue(withIdentifier: "ViewController", sender: self)
     }
 
+
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
+        print("🛠 prepare(for segue:) CALLED")
         if segue.identifier == "ViewController",
            let destination = segue.destination as? ViewController {
             destination.isArabicMode = self.isArabicMode
+            print("✅ Arabic mode passed: \(self.isArabicMode)")
+        } else {
+            print("⚠️ Segue failed or wrong destination class")
         }
     }
+
 
     private func showAlert(_ message: String) {
         let alert = UIAlertController(title: "Login Required", message: message, preferredStyle: .alert)
