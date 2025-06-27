@@ -23,10 +23,10 @@ class loginViewController: UIViewController {
 
         setupLanguageMenu()
         
-
+/*
         // Email field styling
-        emailTI.placeholder = "Enter your email"
-        emailTI.keyboardType = .emailAddress
+       // emailTI.placeholder = "Enter your email"
+        //emailTI.keyboardType = .emailAddress
         emailTI.autocapitalizationType = .none
         emailTI.autocorrectionType = .no
         emailTI.layer.cornerRadius = 8
@@ -43,6 +43,7 @@ class loginViewController: UIViewController {
         passwordTI.layer.borderColor = UIColor.lightGray.cgColor
         passwordTI.setLeftPaddingPoints(10)
 
+ */
         // Login button styling
         loginButton.setTitle("Login", for: .normal)
         loginButton.layer.cornerRadius = 12
@@ -127,3 +128,4 @@ extension UITextField {
         self.leftViewMode = .always
     }
 }
+

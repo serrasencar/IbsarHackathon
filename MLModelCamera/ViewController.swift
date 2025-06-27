@@ -7,14 +7,6 @@ import Speech
 class ViewController: UIViewController {
     
     // MARK: - Properties
-    private var lastVisionCallTime: CFTimeInterval = 0
-    private let visionCallCooldown: CFTimeInterval = 30  // seconds
-    private var lastDetectionSignature: String = ""
-
-    private var isSpeaking: Bool = false
-    private var pendingModelRequests: Int = 0
-    private let modelProcessingQueue = DispatchQueue(label: "com.shu223.modelprocessing", qos: .userInitiated)
-    private let speechPriorityQueue = DispatchQueue(label: "com.shu223.speechpriority", qos: .userInteractive)
     var speechRecognizer: SFSpeechRecognizer?
     var isArabicMode: Bool = false
     private var videoCapture: VideoCapture!
@@ -48,7 +40,7 @@ class ViewController: UIViewController {
     // Vibration
     private let feedbackGenerator = UIImpactFeedbackGenerator(style: .heavy)
     
-    private var cropAndScaleOption: VNImageCropAndScaleOption = .scaleFit
+   // private var cropAndScaleOption: VNImageCropAndScaleOption = .scaleFit
     
     @IBOutlet weak var microphoneButton: UIButton!
     @IBOutlet weak var pause: UIButton!
@@ -58,7 +50,7 @@ class ViewController: UIViewController {
     @IBOutlet private weak var resultLabel: UILabel!
     @IBOutlet private weak var othersLabel: UILabel!
     @IBOutlet private weak var bbView: BoundingBoxView!
-    @IBOutlet weak var cropAndScaleOptionSelector: UISegmentedControl!
+    //@IBOutlet weak var cropAndScaleOptionSelector: UISegmentedControl!
     
     // MARK: - View Lifecycle
     override func viewDidLoad() {
@@ -111,8 +103,8 @@ class ViewController: UIViewController {
             selectModel(url: firstModel)
         }
         
-        cropAndScaleOptionSelector.selectedSegmentIndex = 2
-        updateCropAndScaleOption()
+      //  cropAndScaleOptionSelector.selectedSegmentIndex = 2
+      //  updateCropAndScaleOption()
         
         // Setup microphone button long press gesture
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleMicrophoneLongPress(_:)))
@@ -265,140 +257,86 @@ class ViewController: UIViewController {
     
     private func buildPrompt(from transcript: String) -> String {
         var fullPrompt = transcript
-        
+
         // Add current detection context if available
         if let lastDetections = getLastDetectionData() {
             fullPrompt += "\n\nSurroundings include:\n"
-            for detection in lastDetections {
-                if let topLabel = detection["topLabel"] as? String,
-                   let confidence = detection["topConfidence"] as? Double,
-                   let position = detection["position"] as? [String: Any],
-                   let horizontal = position["horizontal"] as? String,
-                   let estimatedDistance = position["estimatedDistance"] as? String,
-                   confidence > 50 {
-                    fullPrompt += "- \(topLabel) approximately \(estimatedDistance), located on your \(horizontal).\n"
+            
+            for (index, detection) in lastDetections.enumerated() {
+                fullPrompt += "Detection \(index + 1):\n"
+                
+                for (key, value) in detection {
+                    if let subDict = value as? [String: Any] {
+                        for (subKey, subValue) in subDict {
+                            fullPrompt += "- \(key).\(subKey): \(subValue)\n"
+                        }
+                    } else {
+                        fullPrompt += "- \(key): \(value)\n"
+                    }
                 }
+                
+                fullPrompt += "\n"
             }
         }
 
-        
         return fullPrompt
     }
 
     
     private func sendVoicePromptToAPI(transcript: String, imageData: Data? = nil) {
-        print("🎤 Sending voice prompt with context-aware analysis...")
+        print("Sending voice prompt to API: \(transcript)")
+        //prompt
         
+        
+        // Validate transcript
         guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            print("❌ Empty transcript, not sending to API")
             speakText("I didn't catch that, please try again.")
             return
         }
         
-        // 1. Get current environment context from last detection
-        let contextPrompt = buildVoiceContextPrompt(transcript: transcript)
-        
-        // 2. System prompt for voice-specific handling
-        let systemPrompt = isArabicMode ? """
-        أنت مساعد صوتي للمكفوفين. استخدم:
-        ١. نص المستخدم
-        ٢. سياق البيئة المحيطة
-        ٣. الصورة (إذا وجدت)
-        ركز على الأجوبة القصيرة الدقيقة تحت ٢٥ كلمة.
-        """ : """
-        You're a voice assistant for the blind. Use:
-        1. User's speech input
-        2. Environmental context
-        3. Image (if available)
-        Focus on precise responses under 25 words.
-        """
-        
-        // 3. Structured message content
+        // Build the message content
         var messageContent: [[String: Any]] = [
             [
                 "type": "text",
-                "text": contextPrompt
+                "text": buildPrompt(from: transcript)
+
             ]
         ]
         
-        // 4. Add image with low priority if available
+        // If image data is provided, attach as base64
         if let imageData = imageData {
             let imageBase64 = imageData.base64EncodedString()
+            let imageB64Url = "data:image/jpeg;base64,\(imageBase64)"
+            
             messageContent.append([
                 "type": "image_url",
                 "image_url": [
-                    "url": "data:image/jpeg;base64,\(imageBase64)",
-                    "detail": "low"
+                    "url": imageB64Url
                 ]
             ])
         }
         
-        
-        // 5. Voice-specific request settings
         let llmRequest: [String: Any] = [
             "model": "Fanar-Oryx-IVU-1",
             "messages": [
                 [
                     "role": "system",
-                    "content": systemPrompt
+                    "content": "You are an advanced navigation assistant for visually impaired users. Respond to the user's query with precise, actionable guidance. Do not navigate, rather answer the question pomrptly and clearly. Don't lose focus. Keep responses under 30 words."
                 ],
                 [
                     "role": "user",
                     "content": messageContent
                 ]
             ],
-            "temperature": 0.3,  // Slightly higher for voice naturalness
-            "max_tokens": 70
+            "temperature": 0.2,
+            "max_tokens": 100
         ]
         
         performVoiceAPICall(requestData: llmRequest)
     }
 
-    private func buildVoiceContextPrompt(transcript: String) -> String {
-        var prompt = isArabicMode ? """
-        ||| طلب صوتي مع السياق |||
-        النص: \(transcript)
-        
-        """ : """
-        ||| VOICE REQUEST WITH CONTEXT |||
-        Transcript: \(transcript)
-        
-        """
-        
-        // Add environmental context if available
-        if let lastDetections = getLastDetectionData(), !lastDetections.isEmpty {
-            prompt += isArabicMode ? "البيئة الحالية:\n" : "CURRENT ENVIRONMENT:\n"
-            
-            for detection in lastDetections.prefix(3) { // Limit to top 3 objects
-                if let topLabel = detection["topLabel"] as? String,
-                   let confidence = detection["topConfidence"] as? Double,
-                   let position = detection["position"] as? [String: Any],
-                   confidence > 50 {
-                    
-                    let distance = (position["estimatedDistance"] as? String) ?? "unknown"
-                    let direction = (position["horizontal"] as? String) ?? "ahead"
-                    
-                    prompt += isArabicMode ?
-                        "- \(topLabel): \(distance) باتجاه \(direction)\n" :
-                        "- \(topLabel): \(distance) to your \(direction)\n"
-                }
-            }
-        } else {
-            prompt += isArabicMode ?
-                "⚠️ لا توجد بيانات بيئة حديثة\n" :
-                "⚠️ No recent environment data\n"
-        }
-        
-        // Add priority instruction
-        prompt += isArabicMode ? """
-        
-        ملاحظة: ركز على طلب المستخدم الصوتي. استخدم بيانات البيئة فقط للسياق.
-        """ : """
-        
-        NOTE: Prioritize the voice request. Use environment data only for context.
-        """
-        
-        return prompt
-    }
+
 
     private func performVoiceAPICall(requestData: [String: Any]) {
         guard let url = URL(string: "\(apiBaseURL)/chat/completions") else {
@@ -532,48 +470,36 @@ class ViewController: UIViewController {
     
     // MARK: - Model Processing
     private func runModel(imageBuffer: CVPixelBuffer, timestamp: CMTime) {
-        // Skip processing if speech is active or too many pending requests
-        guard !isSpeaking, pendingModelRequests < 2 else {
+        guard let model = selectedVNModel else {
+            print("❌ No model selected")
             return
         }
         
-        pendingModelRequests += 1
+        let handler = VNImageRequestHandler(cvPixelBuffer: imageBuffer)
         
-        modelProcessingQueue.async { [weak self] in
-            guard let self = self, let model = self.selectedVNModel else {
-                self?.pendingModelRequests -= 1
+        let request = VNCoreMLRequest(model: model, completionHandler: { (request, error) in
+            if let error = error {
+                print("❌ Model inference error: \(error)")
                 return
             }
             
-            let handler = VNImageRequestHandler(cvPixelBuffer: imageBuffer)
-            
-            let request = VNCoreMLRequest(model: model) { [weak self] (request, error) in
-                self?.pendingModelRequests -= 1
-                
-                if let error = error {
-                    print("❌ Model inference error: \(error)")
-                    return
-                }
-                
-                if #available(iOS 12.0, *), let results = request.results as? [VNRecognizedObjectObservation] {
-                    self?.processObjectDetectionObservations(results, imageBuffer: imageBuffer, timestamp: timestamp)
-                }
+            if #available(iOS 12.0, *), let results = request.results as? [VNRecognizedObjectObservation] {
+                print("🎯 OBJECT DETECTION RESULTS - Model: \(self.modelLabel.text ?? "Unknown")")
+                self.processObjectDetectionObservations(results, imageBuffer: imageBuffer, timestamp: timestamp)
             }
-            
-            request.preferBackgroundProcessing = true
-            request.imageCropAndScaleOption = self.cropAndScaleOption
-            
-            do {
-                try handler.perform([request])
-            } catch {
-                print("❌ Failed to perform model inference: \(error)")
-                self.pendingModelRequests -= 1
-            }
+        })
+        
+        request.preferBackgroundProcessing = true
+    //    request.imageCropAndScaleOption = cropAndScaleOption
+        
+        do {
+            try handler.perform([request])
+        } catch {
+            print("❌ Failed to perform model inference: \(error)")
         }
     }
     
     // MARK: - Enhanced Object Processing with Spatial Context
-    @available(iOS 12.0, *)
     @available(iOS 12.0, *)
     private func processObjectDetectionObservations(_ results: [VNRecognizedObjectObservation], imageBuffer: CVPixelBuffer, timestamp: CMTime) {
         print("🎯 Detected \(results.count) objects:")
@@ -582,30 +508,62 @@ class ViewController: UIViewController {
         var criticalObstacles: [String] = []
         var pathBlockers: [String] = []
         var environmentalHazards: [String] = []
-
+        
         for (index, result) in results.enumerated() {
             let boundingBox = result.boundingBox
-
-            guard let topLabel = result.labels.first?.identifier,
-                  result.labels.first?.confidence ?? 0 > 0.01 else {
-                continue
-            }
-
+            
+            let imageWidth = CVPixelBufferGetWidth(imageBuffer)
+            let imageHeight = CVPixelBufferGetHeight(imageBuffer)
+            let screenX = boundingBox.origin.x * CGFloat(imageWidth)
+            let screenY = boundingBox.origin.y * CGFloat(imageHeight)
+            let screenWidth = boundingBox.size.width * CGFloat(imageWidth)
+            let screenHeight = boundingBox.size.height * CGFloat(imageHeight)
+            
             let analysisResult = analyzeObjectPosition(boundingBox: boundingBox)
-
-            print("\n🔸 Object \(index + 1): \(topLabel)")
-            print("   Confidence: \(String(format: "%.1f", (result.labels.first?.confidence ?? 0) * 100))%")
+            
+            // Trigger vibration for high urgency OR very close objects
+            if analysisResult.urgency.contains("IMMEDIATE") || analysisResult.distance == "very close" {
+                DispatchQueue.main.async {
+                    self.feedbackGenerator.impactOccurred()
+                }
+            }
+            
+            print("\n🔸 Object \(index + 1):")
             print("   📍 Position: \(analysisResult.horizontal), \(analysisResult.vertical)")
             print("   📏 Distance: \(analysisResult.estimatedDistance)")
-
+            print("   🧭 Direction: \(analysisResult.preciseDirection)")
+            print("   ⚠️ Urgency: \(analysisResult.urgency)")
+            
             var labels: [[String: Any]] = []
-            for label in result.labels {
+            var topLabel = "unknown"
+            var topConfidence: Float = 0
+            
+            for (labelIndex, label) in result.labels.enumerated() {
+                let confidence = label.confidence * 100
+                print("      \(labelIndex + 1). \(label.identifier) - \(String(format: "%.1f", confidence))%")
+                
+                if labelIndex == 0 {
+                    topLabel = label.identifier
+                    topConfidence = confidence
+                }
+                
                 labels.append([
                     "class": label.identifier,
-                    "confidence": label.confidence * 100
+                    "confidence": confidence
                 ])
             }
-
+            
+            // Create detailed obstacle descriptions
+            let obstacleInfo = "\(topLabel) at \(analysisResult.horizontal) (\(analysisResult.estimatedDistance)) - \(analysisResult.preciseDirection)"
+            
+            if isMovingVehicle(topLabel) || isDangerousObject(topLabel) {
+                criticalObstacles.append("🚨 \(obstacleInfo) - STOP AND WAIT")
+            } else if isPathBlocker(topLabel) {
+                pathBlockers.append("🚧 \(obstacleInfo)")
+            } else if isEnvironmentalHazard(topLabel) {
+                environmentalHazards.append("⚠️ \(obstacleInfo)")
+            }
+            
             let objectData: [String: Any] = [
                 "id": index,
                 "type": "detection",
@@ -615,11 +573,17 @@ class ViewController: UIViewController {
                         "y": boundingBox.origin.y,
                         "width": boundingBox.size.width,
                         "height": boundingBox.size.height
+                    ],
+                    "pixels": [
+                        "x": Int(screenX),
+                        "y": Int(screenY),
+                        "width": Int(screenWidth),
+                        "height": Int(screenHeight)
                     ]
                 ],
                 "labels": labels,
                 "topLabel": topLabel,
-                "topConfidence": (result.labels.first?.confidence ?? 0) * 100,
+                "topConfidence": topConfidence,
                 "position": [
                     "horizontal": analysisResult.horizontal,
                     "vertical": analysisResult.vertical,
@@ -630,53 +594,45 @@ class ViewController: UIViewController {
                 ],
                 "category": categorizeObject(topLabel)
             ]
-
+            
             detectionData.append(objectData)
-
-            if isMovingVehicle(topLabel) || isDangerousObject(topLabel) {
-                criticalObstacles.append("🚨 \(topLabel) at \(analysisResult.estimatedDistance) - \(analysisResult.preciseDirection)")
-            } else if isPathBlocker(topLabel) {
-                pathBlockers.append("🚧 \(topLabel) at \(analysisResult.estimatedDistance)")
-            } else if isEnvironmentalHazard(topLabel) {
-                environmentalHazards.append("⚠️ \(topLabel) at \(analysisResult.estimatedDistance)")
-            }
         }
-
-        self.lastDetectionData = detectionData
-
-        // ⏱️ Only send API call every 30 seconds, no matter what
+        
         let currentTime = CACurrentMediaTime()
-        guard currentTime - lastVisionCallTime >= visionCallCooldown else {
-            print("⏳ Skipping vision API (cooldown not passed)")
-            return
+        if currentTime - lastAPICallTime >= apiCallInterval {
+            lastAPICallTime = currentTime
+            
+            print("\n🚀 SENDING ENHANCED SPATIAL ANALYSIS TO API:")
+            print("📊 Detection Data Count: \(detectionData.count) objects")
+            print("🚨 Critical Obstacles: \(criticalObstacles.count)")
+            print("🚧 Path Blockers: \(pathBlockers.count)")
+            print("⚠️ Environmental Hazards: \(environmentalHazards.count)")
+            
+            let imageData = convertPixelBufferToImageData(imageBuffer)
+            self.latestCapturedImageData = imageData
+            sendToVisionLanguageAPI(
+                detectionData: detectionData,
+                imageData: imageData,
+                timestamp: timestamp.seconds,
+                criticalObstacles: criticalObstacles,
+                pathBlockers: pathBlockers,
+                environmentalHazards: environmentalHazards,
+                isArabicMode: isArabicMode
+            )
         }
-
-        lastVisionCallTime = currentTime
-
-        let imageData = convertPixelBufferToImageData(imageBuffer)
-        self.latestCapturedImageData = imageData
-
-        sendToVisionLanguageAPI(
-            detectionData: detectionData,
-            imageData: imageData,
-            timestamp: timestamp.seconds,
-            criticalObstacles: criticalObstacles,
-            pathBlockers: pathBlockers,
-            environmentalHazards: environmentalHazards,
-            isArabicMode: isArabicMode
-        )
-
-        // 🖼️ Update bounding box UI
+        
+        // Store latest detection data for voice queries
+        self.lastDetectionData = detectionData
+        
+        bbView.observations = results
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.bbView.observations = results
             self.resultView.isHidden = true
             self.bbView.isHidden = false
             self.bbView.setNeedsDisplay()
         }
     }
-
-
+    
     // MARK: - Enhanced Object Analysis with Precise Distance and Direction
     private func analyzeObjectPosition(boundingBox: CGRect) -> (horizontal: String, vertical: String, distance: String, urgency: String, preciseDirection: String, estimatedDistance: String) {
         let x = boundingBox.origin.x
@@ -798,23 +754,11 @@ class ViewController: UIViewController {
         criticalObstacles: [String],
         pathBlockers: [String],
         environmentalHazards: [String],
-        isArabicMode: Bool = false
+        isArabicMode: Bool = false  // Add this parameter
     ) {
-        print("🔄 Preparing dual-prompt API call with \(detectionData.count) detections...")
+        print("🔄 Preparing Vision-Language API call...")
         
-        // Debug: Print first 3 detections to verify data
-        for (index, detection) in detectionData.prefix(3).enumerated() {
-            print("🔍 Detection \(index + 1):")
-            print("   Label: \(detection["topLabel"] as? String ?? "unknown")")
-            print("   Confidence: \(detection["topConfidence"] as? Double ?? 0)%")
-            if let position = detection["position"] as? [String: Any] {
-                print("   Position: \(position["horizontal"] as? String ?? "unknown")")
-                print("   Distance: \(position["estimatedDistance"] as? String ?? "unknown")")
-            }
-        }
-        
-        // 1. Create enhanced text prompt with all available data
-        let textPrompt = createTextAnalysisPrompt(
+        let prompt = createEnhancedNavigationPrompt(
             detectionData: detectionData,
             criticalObstacles: criticalObstacles,
             pathBlockers: pathBlockers,
@@ -822,129 +766,53 @@ class ViewController: UIViewController {
             isArabicMode: isArabicMode
         )
         
-        print("📝 Text Prompt Content:\n\(textPrompt)")
-        
-        // 2. Image prompt - secondary fallback
-        let imagePrompt = isArabicMode ?
-            "استخدم الصورة فقط إذا كانت هناك تفاصيل غير موجودة في التحليل النصي أعلاه" :
-            "Use image only if there are details missing from the above text analysis"
-        
-        // 3. System prompt to prioritize text data
-        let systemPrompt = isArabicMode ? """
-        أنت مساعد ملاحة للمكفوفين. البيانات النصية أعلاه تأتي من نموذج رؤية حاسوبية دقيقة.
-        أعط الأولوية لهذه البيانات عند أي تعارض مع الصورة.
-        """ : """
-        You are a navigation assistant for the blind. The text data above comes from precise computer vision models.
-        Prioritize this data over image interpretation when there's any conflict.
-        """
-        
-        // 4. Structured message content
         var messageContent: [[String: Any]] = [
             [
                 "type": "text",
-                "text": textPrompt
+                "text": prompt
             ]
         ]
         
-        // 5. Add image with reduced priority if available
         if let imageData = imageData {
             let imageBase64 = imageData.base64EncodedString()
+            let imageB64Url = "data:image/jpeg;base64,\(imageBase64)"
+            
             messageContent.append([
                 "type": "image_url",
                 "image_url": [
-                    "url": "data:image/jpeg;base64,\(imageBase64)",
-                    "detail": "low"  // Reduces image influence
+                    "url": imageB64Url
                 ]
-            ])
-            messageContent.append([
-                "type": "text",
-                "text": imagePrompt
             ])
         }
         
-        // 6. Final request with lower temperature for more deterministic outputs
+        // Set system prompt content based on language
+        let systemPromptContent = isArabicMode ? """
+        أنت مساعد ملاحة متقدم للمستخدمين ضعاف البصر. قم بتحليل بيانات كشف الكائنات والصورة الفعلية لتقديم إرشادات ملاحة دقيقة وقابلة للتنفيذ. كن محددًا بشأن العقبات، مواقعها الدقيقة، ومسارات التنقل الآمنة. اجعل الردود أقل من 30 كلمة لكنها دقيقة جدًا حول العقبات الموجودة ومواقعها.
+        """ : """
+        You are an advanced navigation assistant for visually impaired users. Analyze both the object detection data AND the actual image to provide precise, actionable navigation guidance. Be specific about obstacles, their exact locations, and safe navigation paths. Keep responses under 30 words but be very specific about what obstacles exist and where.
+        """
+        
+
         let llmRequest: [String: Any] = [
             "model": "Fanar-Oryx-IVU-1",
             "messages": [
                 [
                     "role": "system",
-                    "content": systemPrompt
+                    "content": systemPromptContent
                 ],
                 [
                     "role": "user",
                     "content": messageContent
                 ]
             ],
-            "temperature": 0.1,  // More deterministic outputs
-            "max_tokens": 200,
-            "top_p": 0.9
+            "temperature": 0.2,
+            "max_tokens": 100
         ]
         
-        // Debug: Print the full request structure
-        if let debugData = try? JSONSerialization.data(withJSONObject: llmRequest, options: .prettyPrinted),
-           let debugString = String(data: debugData, encoding: .utf8) {
-            print("📋 Full API Request:\n\(debugString)")
-        }
         
         performVisionLanguageAPICall(requestData: llmRequest)
     }
-    private func createTextAnalysisPrompt(
-        detectionData: [[String: Any]],
-        criticalObstacles: [String],
-        pathBlockers: [String],
-        environmentalHazards: [String],
-        isArabicMode: Bool
-    ) -> String {
-        // 1. Header with confidence notice
-        var prompt = isArabicMode ? """
-        ||| تحليل نصي عالي الدقة |||
-        عدد الكائنات المكتشفة: \(detectionData.count)
-        
-        """ : """
-        ||| OBJECT DETECTION ANALYSIS |||
-        Detected objects: \(detectionData.count)
-        
-        """
-        
-        // 2. Critical obstacles section
-        if !criticalObstacles.isEmpty {
-            prompt += isArabicMode ? "🚨 مخاطر حرجة:\n" : "🚨 CRITICAL OBSTACLES:\n"
-            for obstacle in criticalObstacles {
-                prompt += "- \(obstacle)\n"
-            }
-            prompt += "\n"
-        }
-        
-        // 3. All detected objects section
-        if !detectionData.isEmpty {
-            prompt += isArabicMode ? "📌 جميع الكائنات المكتشفة:\n" : "📌 ALL DETECTED OBJECTS:\n"
-            for detection in detectionData {
-                guard let topLabel = detection["topLabel"] as? String,
-                      let confidence = detection["topConfidence"] as? Double,
-                      let position = detection["position"] as? [String: Any] else { continue }
-                
-                let distance = (position["estimatedDistance"] as? String) ?? "unknown"
-                let direction = (position["horizontal"] as? String) ?? "ahead"
-                
-                prompt += isArabicMode ?
-                    "- \(topLabel): \(distance) (\(direction)), ثقة \(Int(confidence))%\n" :
-                    "- \(topLabel): \(distance) (\(direction)), confidence \(Int(confidence))%\n"
-            }
-        } else {
-            prompt += isArabicMode ? "⚠️ لا توجد كائنات مكتشفة\n" : "⚠️ No objects detected\n"
-        }
-        
-        // 4. Priority instruction
-        prompt += isArabicMode ? """
-        
-        ملاحظة: هذه البيانات من نموذج الرؤية الحاسوبية.
-        """ : """
-        
-        NOTE: This data comes from computer vision analysis.
-        """
-        
-        return prompt
-    }
+
     
     // MARK: - Enhanced Navigation Prompt with Spatial Intelligence
     private func createEnhancedNavigationPrompt(
@@ -958,7 +826,7 @@ class ViewController: UIViewController {
         var prompt = isArabicMode ?
             "توجيهات ملاحة مفصلة لمستخدمين ضعاف البصر\n\n" :
             "DETAILED NAVIGATION GUIDANCE FOR VISUALLY IMPAIRED USER\n\n"
-        
+        /*
         // Analyze available walking space
         let walkableSpaceAnalysis = analyzeWalkableSpace(detectionData: detectionData)
         
@@ -1007,6 +875,7 @@ class ViewController: UIViewController {
             }
             prompt += "\n"
         }
+         */
         
         // Object Locations
         prompt += isArabicMode ?
@@ -1052,9 +921,27 @@ class ViewController: UIViewController {
                     "  Priority: \(urgency)\n\n"
             }
         }
-        
+        // FLATTENED DETECTION LOGS
+           prompt += isArabicMode ? "\nسجلات الكشف:\n\n" : "\nRAW DETECTION LOGS:\n\n"
+           
+           for (index, detection) in detectionData.enumerated() {
+               prompt += isArabicMode ?
+                   "الكشف \(index + 1):\n" :
+                   "Detection \(index + 1):\n"
+               
+               for (key, value) in detection {
+                   if let subDict = value as? [String: Any] {
+                       for (subKey, subValue) in subDict {
+                           prompt += "- \(key).\(subKey): \(subValue)\n"
+                       }
+                   } else {
+                       prompt += "- \(key): \(value)\n"
+                   }
+               }
+               prompt += "\n"
+              }
         // Guidance Requirements
-        prompt += isArabicMode ? """
+               prompt += isArabicMode ? """
             
             متطلبات التوجيه:
             أنت تقدم إرشادات لشخص لا يستطيع الرؤية. بناءً على الصورة وتحليل الكائنات:
@@ -1109,6 +996,11 @@ class ViewController: UIViewController {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 30.0
+        
+        if let body = request.httpBody,
+           let jsonString = String(data: body, encoding: .utf8) {
+            print("📦 Final Serialized JSON Request:\n\(jsonString)")
+        }
         
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: requestData)
@@ -1400,61 +1292,54 @@ class ViewController: UIViewController {
             guard let self = self else { return }
             
             do {
-                // Setup audio session
+                // Configure audio session BEFORE creating player
                 let audioSession = AVAudioSession.sharedInstance()
                 try audioSession.setCategory(.playback, mode: .default, options: [.duckOthers])
                 try audioSession.setActive(true)
                 print("✅ Audio session configured for playback")
-
-                // Create player
+                
+                // Create audio player with the received data
                 self.audioPlayer = try AVAudioPlayer(data: audioData)
+                
                 guard let player = self.audioPlayer else {
-                    print("❌ Could not create audio player instance")
-                    try? audioSession.setActive(false)
+                    print("❌ Failed to create audio player")
                     self.fallbackToBuiltInTTS(originalText)
                     return
                 }
                 
-                // Setup player
+                // Configure player
                 player.delegate = self
                 player.volume = 1.0
                 player.prepareToPlay()
-
-                print("🎵 Audio player ready (duration: \(player.duration) sec)")
                 
-                // Try to play
-                if player.play() {
-                    print("✅ Fanar TTS audio playback started: \"\(originalText)\"")
+                print("🎵 Audio player created successfully")
+                print("🎵 Audio duration: \(player.duration) seconds")
+                
+                // Play the audio
+                let success = player.play()
+                if success {
+                    print("✅ Fanar TTS audio playback started for: \(originalText)")
                 } else {
-                    print("⚠️ Playback failed, retrying once...")
-                    player.prepareToPlay()
-                    if !player.play() {
-                        print("❌ Playback retry failed")
-                        try? audioSession.setActive(false)
-                        self.fallbackToBuiltInTTS(originalText)
-                    }
+                    print("❌ Failed to start audio playback")
+                    self.fallbackToBuiltInTTS(originalText)
                 }
-
+                
             } catch {
-                print("❌ Error during audio setup/playback: \(error.localizedDescription)")
+                print("❌ Failed to create/configure audio player: \(error)")
+                print("❌ Error details: \(error.localizedDescription)")
+                
+                // Log more specific error information
                 if let nsError = error as NSError? {
-                    print("❌ Error domain: \(nsError.domain), code: \(nsError.code)")
+                    print("❌ Error domain: \(nsError.domain)")
+                    print("❌ Error code: \(nsError.code)")
                     if nsError.domain == NSOSStatusErrorDomain {
-                        print("❌ Likely audio format issue (OSStatus error)")
+                        print("❌ OSStatus error - likely audio format issue")
                     }
                 }
-
-                try? AVAudioSession.sharedInstance().setActive(false)
+                
                 self.fallbackToBuiltInTTS(originalText)
             }
         }
-    }
-
-
-    // ✅ Test function you can call to verify TTS is working
-    private func testFanarTTS() {
-        print("🧪 Testing Fanar TTS...")
-        speakText("Hello! This is a test of the Fanar text to speech API.")
     }
     
     private func fallbackToBuiltInTTS(_ text: String) {
@@ -1497,12 +1382,6 @@ class ViewController: UIViewController {
     }
 
     // MARK: - Audio Session Configuration
-    private enum AudioSessionMode {
-        case playback
-        case recording
-        case playAndRecord
-    }
-
     private func configureAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
@@ -1513,21 +1392,24 @@ class ViewController: UIViewController {
             print("❌ Failed to configure audio session: \(error)")
         }
     }
-    
+   /*
     private func updateCropAndScaleOption() {
         let selectedIndex = cropAndScaleOptionSelector.selectedSegmentIndex
         cropAndScaleOption = VNImageCropAndScaleOption(rawValue: UInt(selectedIndex))!
         print("🔧 Crop and scale option: \(cropAndScaleOption)")
     }
+    */
     
     // MARK: - Actions
     @IBAction func modelBtnTapped(_ sender: UIButton) {
         showActionSheet()
     }
     
+    /*
     @IBAction func cropAndScaleOptionChanged(_ sender: UISegmentedControl) {
         updateCropAndScaleOption()
     }
+     */
 }
 
 // MARK: - AVSpeechSynthesizerDelegate
@@ -1612,3 +1494,5 @@ extension URL {
         return lastPathComponent.replacingOccurrences(of: ".mlmodelc", with: "")
     }
 }
+
+
