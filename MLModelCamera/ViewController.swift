@@ -577,7 +577,7 @@ class ViewController: UIViewController {
     @available(iOS 12.0, *)
     private func processObjectDetectionObservations(_ results: [VNRecognizedObjectObservation], imageBuffer: CVPixelBuffer, timestamp: CMTime) {
         print("🎯 Detected \(results.count) objects:")
-
+        
         var detectionData: [[String: Any]] = []
         var criticalObstacles: [String] = []
         var pathBlockers: [String] = []
@@ -642,34 +642,16 @@ class ViewController: UIViewController {
             }
         }
 
-        // Always update
         self.lastDetectionData = detectionData
 
-        // 🔎 Detection Summary
-        print("\n📊 Detection Summary:")
-        print("Total objects processed: \(detectionData.count)")
-        print("Critical obstacles: \(criticalObstacles.count)")
-        print("Path blockers: \(pathBlockers.count)")
-        print("Environmental hazards: \(environmentalHazards.count)")
-
-        // 🧠 Compute current detection "signature"
-        let currentSignature = detectionData
-            .compactMap { $0["topLabel"] as? String }
-            .sorted()
-            .joined(separator: ",")
-
-        let now = CACurrentMediaTime()
-        let isSameAsLast = currentSignature == lastDetectionSignature
-        let cooldownPassed = (now - lastVisionCallTime) >= visionCallCooldown
-
-        guard !isSameAsLast || cooldownPassed else {
-            print("⏳ Skipping repeated detection (throttled)")
+        // ⏱️ Only send API call every 30 seconds, no matter what
+        let currentTime = CACurrentMediaTime()
+        guard currentTime - lastVisionCallTime >= visionCallCooldown else {
+            print("⏳ Skipping vision API (cooldown not passed)")
             return
         }
 
-        // ✅ Update state
-        lastDetectionSignature = currentSignature
-        lastVisionCallTime = now
+        lastVisionCallTime = currentTime
 
         let imageData = convertPixelBufferToImageData(imageBuffer)
         self.latestCapturedImageData = imageData
@@ -684,7 +666,7 @@ class ViewController: UIViewController {
             isArabicMode: isArabicMode
         )
 
-        // 🖼️ Update UI
+        // 🖼️ Update bounding box UI
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.bbView.observations = results
@@ -693,6 +675,7 @@ class ViewController: UIViewController {
             self.bbView.setNeedsDisplay()
         }
     }
+
 
     // MARK: - Enhanced Object Analysis with Precise Distance and Direction
     private func analyzeObjectPosition(boundingBox: CGRect) -> (horizontal: String, vertical: String, distance: String, urgency: String, preciseDirection: String, estimatedDistance: String) {
