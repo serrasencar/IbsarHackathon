@@ -36,6 +36,7 @@ class ViewController: UIViewController {
     private var audioPlayer: AVAudioPlayer?
     private let ttsQueue = DispatchQueue(label: "com.shu223.tts.queue")
     
+    private var lastDetectionData: [[String: Any]] = []
     // Vibration
     private let feedbackGenerator = UIImpactFeedbackGenerator(style: .heavy)
     
@@ -249,14 +250,30 @@ class ViewController: UIViewController {
         // Restore audio session for playback
         configureAudioSession()
     }
+    
+    private func getLastDetectionData() -> [[String: Any]]? {
+        return lastDetectionData.isEmpty ? nil : lastDetectionData
+    }
+    
     private func buildPrompt(from transcript: String) -> String {
         var fullPrompt = transcript
+        
+        // Add current detection context if available
+        if let lastDetections = getLastDetectionData() {
+            fullPrompt += "\n\nSurroundings include:\n"
+            for detection in lastDetections {
+                if let topLabel = detection["topLabel"] as? String,
+                   let confidence = detection["topConfidence"] as? Double,
+                   let position = detection["position"] as? [String: Any],
+                   let horizontal = position["horizontal"] as? String,
+                   let estimatedDistance = position["estimatedDistance"] as? String,
+                   confidence > 50 {
+                    fullPrompt += "- \(topLabel) approximately \(estimatedDistance), located on your \(horizontal).\n"
+                }
+            }
+        }
 
-        // Add label values to help context
-        fullPrompt += " | Model Label: \(modelLabel.text ?? "")"
-        fullPrompt += " | Result Label: \(resultLabel.text ?? "")"
-        fullPrompt += " | Others Label: \(othersLabel.text ?? "")"
-
+        
         return fullPrompt
     }
 
@@ -598,6 +615,9 @@ class ViewController: UIViewController {
                 isArabicMode: isArabicMode
             )
         }
+        
+        // Store latest detection data for voice queries
+        self.lastDetectionData = detectionData
         
         bbView.observations = results
         DispatchQueue.main.async { [weak self] in
