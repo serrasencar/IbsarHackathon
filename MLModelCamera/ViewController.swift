@@ -450,6 +450,7 @@ class ViewController: UIViewController {
         }
     }
     
+    // MARK: - Enhanced Object Processing with Spatial Context
     @available(iOS 12.0, *)
     private func processObjectDetectionObservations(_ results: [VNRecognizedObjectObservation], imageBuffer: CVPixelBuffer, timestamp: CMTime) {
         print("🎯 Detected \(results.count) objects:")
@@ -469,20 +470,20 @@ class ViewController: UIViewController {
             let screenWidth = boundingBox.size.width * CGFloat(imageWidth)
             let screenHeight = boundingBox.size.height * CGFloat(imageHeight)
             
-            let (horizontalPos, verticalPos, distance, urgency) = analyzeObjectPosition(boundingBox: boundingBox)
+            let analysisResult = analyzeObjectPosition(boundingBox: boundingBox)
             
             // Trigger vibration for high urgency OR very close objects
-            if urgency == "HIGH - directly in path" || distance == "very close" {
+            if analysisResult.urgency.contains("IMMEDIATE") || analysisResult.distance == "very close" {
                 DispatchQueue.main.async {
                     self.feedbackGenerator.impactOccurred()
                 }
             }
-
             
             print("\n🔸 Object \(index + 1):")
-            print("   📍 Position: \(horizontalPos), \(verticalPos)")
-            print("   📏 Distance: \(distance)")
-            print("   ⚠️ Urgency: \(urgency)")
+            print("   📍 Position: \(analysisResult.horizontal), \(analysisResult.vertical)")
+            print("   📏 Distance: \(analysisResult.estimatedDistance)")
+            print("   🧭 Direction: \(analysisResult.preciseDirection)")
+            print("   ⚠️ Urgency: \(analysisResult.urgency)")
             
             var labels: [[String: Any]] = []
             var topLabel = "unknown"
@@ -503,14 +504,15 @@ class ViewController: UIViewController {
                 ])
             }
             
-            let obstacleInfo = "\(topLabel) at \(horizontalPos) (\(distance))"
+            // Create detailed obstacle descriptions
+            let obstacleInfo = "\(topLabel) at \(analysisResult.horizontal) (\(analysisResult.estimatedDistance)) - \(analysisResult.preciseDirection)"
             
             if isMovingVehicle(topLabel) || isDangerousObject(topLabel) {
-                criticalObstacles.append("🚨 \(obstacleInfo) - IMMEDIATE DANGER")
+                criticalObstacles.append("🚨 \(obstacleInfo) - STOP AND WAIT")
             } else if isPathBlocker(topLabel) {
-                pathBlockers.append("🚧 \(obstacleInfo) - PATH BLOCKED")
+                pathBlockers.append("🚧 \(obstacleInfo)")
             } else if isEnvironmentalHazard(topLabel) {
-                environmentalHazards.append("⚠️ \(obstacleInfo) - CAUTION NEEDED")
+                environmentalHazards.append("⚠️ \(obstacleInfo)")
             }
             
             let objectData: [String: Any] = [
@@ -534,10 +536,12 @@ class ViewController: UIViewController {
                 "topLabel": topLabel,
                 "topConfidence": topConfidence,
                 "position": [
-                    "horizontal": horizontalPos,
-                    "vertical": verticalPos,
-                    "distance": distance,
-                    "urgency": urgency
+                    "horizontal": analysisResult.horizontal,
+                    "vertical": analysisResult.vertical,
+                    "distance": analysisResult.distance,
+                    "urgency": analysisResult.urgency,
+                    "preciseDirection": analysisResult.preciseDirection,
+                    "estimatedDistance": analysisResult.estimatedDistance
                 ],
                 "category": categorizeObject(topLabel)
             ]
@@ -549,14 +553,14 @@ class ViewController: UIViewController {
         if currentTime - lastAPICallTime >= apiCallInterval {
             lastAPICallTime = currentTime
             
-            print("\n🚀 SENDING TO VISION-LANGUAGE API:")
+            print("\n🚀 SENDING ENHANCED SPATIAL ANALYSIS TO API:")
             print("📊 Detection Data Count: \(detectionData.count) objects")
             print("🚨 Critical Obstacles: \(criticalObstacles.count)")
             print("🚧 Path Blockers: \(pathBlockers.count)")
             print("⚠️ Environmental Hazards: \(environmentalHazards.count)")
             
             let imageData = convertPixelBufferToImageData(imageBuffer)
-            self.latestCapturedImageData = imageData  // ✅ Save for other use (like voice prompt)
+            self.latestCapturedImageData = imageData
             sendToVisionLanguageAPI(
                 detectionData: detectionData,
                 imageData: imageData,
@@ -576,63 +580,89 @@ class ViewController: UIViewController {
         }
     }
     
-    // MARK: - Object Analysis
-    private func analyzeObjectPosition(boundingBox: CGRect) -> (horizontal: String, vertical: String, distance: String, urgency: String) {
+    // MARK: - Enhanced Object Analysis with Precise Distance and Direction
+    private func analyzeObjectPosition(boundingBox: CGRect) -> (horizontal: String, vertical: String, distance: String, urgency: String, preciseDirection: String, estimatedDistance: String) {
         let x = boundingBox.origin.x
         let y = boundingBox.origin.y
         let width = boundingBox.size.width
         let height = boundingBox.size.height
         let area = width * height
+        let centerX = x + width / 2
+        let centerY = y + height / 2
         
+        // More precise horizontal positioning
         let horizontalPos: String
-        if x < 0.15 {
-            horizontalPos = "far left side"
-        } else if x < 0.35 {
+        let preciseDirection: String
+        
+        if centerX < 0.1 {
+            horizontalPos = "far left edge"
+            preciseDirection = "sharp right turn available"
+        } else if centerX < 0.25 {
             horizontalPos = "left side"
-        } else if x < 0.45 {
-            horizontalPos = "slightly left of center"
-        } else if x < 0.55 {
+            preciseDirection = "move right about 2-3 steps"
+        } else if centerX < 0.4 {
+            horizontalPos = "left of center"
+            preciseDirection = "slight right adjustment needed"
+        } else if centerX < 0.6 {
             horizontalPos = "directly ahead"
-        } else if x < 0.65 {
-            horizontalPos = "slightly right of center"
-        } else if x < 0.85 {
+            preciseDirection = "obstacle blocking forward path"
+        } else if centerX < 0.75 {
+            horizontalPos = "right of center"
+            preciseDirection = "slight left adjustment needed"
+        } else if centerX < 0.9 {
             horizontalPos = "right side"
+            preciseDirection = "move left about 2-3 steps"
         } else {
-            horizontalPos = "far right side"
+            horizontalPos = "far right edge"
+            preciseDirection = "sharp left turn available"
         }
         
+        // Enhanced vertical analysis for ground obstacles vs overhead
         let verticalPos: String
-        if y < 0.2 {
+        if y > 0.7 { // Object appears in lower portion (closer to ground in camera view)
             verticalPos = "ground level"
-        } else if y < 0.5 {
-            verticalPos = "waist height"
-        } else if y < 0.8 {
-            verticalPos = "eye level"
+        } else if y > 0.4 {
+            verticalPos = "waist to chest height"
+        } else if y > 0.2 {
+            verticalPos = "head height"
         } else {
             verticalPos = "overhead"
         }
         
+        // More accurate distance estimation based on object size in frame
+        let estimatedDistance: String
         let distance: String
-        if area > 0.3 {
+        
+        if area > 0.4 {
             distance = "very close"
-        } else if area > 0.15 {
+            estimatedDistance = "less than 2 meters away"
+        } else if area > 0.25 {
             distance = "close"
-        } else if area > 0.05 {
+            estimatedDistance = "about 2-3 meters away"
+        } else if area > 0.15 {
             distance = "medium distance"
+            estimatedDistance = "about 4-5 meters away"
+        } else if area > 0.08 {
+            distance = "moderate distance"
+            estimatedDistance = "about 6-8 meters away"
         } else {
             distance = "far away"
+            estimatedDistance = "more than 8 meters away"
         }
         
+        // Enhanced urgency assessment
         let urgency: String
-        if area > 0.2 && x > 0.3 && x < 0.7 && y < 0.5 {
-            urgency = "HIGH - directly in path"
-        } else if area > 0.1 && y < 0.3 {
-            urgency = "MEDIUM - potential obstacle"
+        if area > 0.3 && centerX > 0.35 && centerX < 0.65 && y > 0.4 {
+            urgency = "IMMEDIATE - blocking your path"
+        } else if area > 0.2 && centerX > 0.25 && centerX < 0.75 {
+            urgency = "HIGH - in walking zone"
+        } else if area > 0.1 && y > 0.5 {
+            urgency = "MEDIUM - potential ground obstacle"
         } else {
-            urgency = "LOW - not immediate concern"
+            urgency = "LOW - not blocking movement"
         }
         
-        return (horizontalPos, verticalPos, distance, urgency)
+        return (horizontalPos, verticalPos, distance, urgency, preciseDirection, estimatedDistance)
     }
     
     private func isMovingVehicle(_ label: String) -> Bool {
@@ -719,70 +749,85 @@ class ViewController: UIViewController {
         performVisionLanguageAPICall(requestData: llmRequest)
     }
     
+    // MARK: - Enhanced Navigation Prompt with Spatial Intelligence
     private func createEnhancedNavigationPrompt(
         detectionData: [[String: Any]],
         criticalObstacles: [String],
         pathBlockers: [String],
         environmentalHazards: [String]
     ) -> String {
-        var prompt = "NAVIGATION ANALYSIS FOR VISUALLY IMPAIRED USER\n\n"
+        var prompt = "DETAILED NAVIGATION GUIDANCE FOR VISUALLY IMPAIRED USER\n\n"
         
-        prompt += "OBJECT DETECTION SUMMARY:\n"
+        // Analyze available walking space
+        let walkableSpaceAnalysis = analyzeWalkableSpace(detectionData: detectionData)
+        
+        prompt += "WALKING SPACE ANALYSIS:\n"
+        prompt += "- Left side clearance: \(walkableSpaceAnalysis.leftClearance)\n"
+        prompt += "- Center path: \(walkableSpaceAnalysis.centerPath)\n"
+        prompt += "- Right side clearance: \(walkableSpaceAnalysis.rightClearance)\n"
+        prompt += "- Recommended direction: \(walkableSpaceAnalysis.recommendedPath)\n\n"
         
         if !criticalObstacles.isEmpty {
-            prompt += "🚨 CRITICAL DANGERS:\n"
+            prompt += "🚨 IMMEDIATE DANGERS - STOP AND NAVIGATE AROUND:\n"
             for obstacle in criticalObstacles {
                 prompt += "- \(obstacle)\n"
             }
+            prompt += "\n"
         }
         
         if !pathBlockers.isEmpty {
-            prompt += "\n🚧 PATH OBSTACLES:\n"
+            prompt += "🚧 PATH OBSTACLES - ALTERNATIVE ROUTE NEEDED:\n"
             for blocker in pathBlockers {
                 prompt += "- \(blocker)\n"
             }
+            prompt += "\n"
         }
         
         if !environmentalHazards.isEmpty {
-            prompt += "\n⚠️ ENVIRONMENTAL HAZARDS:\n"
+            prompt += "⚠️ ENVIRONMENTAL HAZARDS - PROCEED WITH CAUTION:\n"
             for hazard in environmentalHazards {
                 prompt += "- \(hazard)\n"
             }
+            prompt += "\n"
         }
         
-        if criticalObstacles.isEmpty && pathBlockers.isEmpty && environmentalHazards.isEmpty {
-            prompt += "✅ NO MAJOR OBSTACLES DETECTED\n"
-        }
-        
-        prompt += "\nDETAILED OBJECT POSITIONS:\n"
+        prompt += "PRECISE OBJECT LOCATIONS AND NAVIGATION INSTRUCTIONS:\n"
         for detection in detectionData {
             if let topLabel = detection["topLabel"] as? String,
                let confidence = detection["topConfidence"] as? Double,
                let position = detection["position"] as? [String: Any],
                let horizontal = position["horizontal"] as? String,
-               let distance = position["distance"] as? String,
-               let urgency = position["urgency"] as? String {
+               let preciseDirection = position["preciseDirection"] as? String,
+               let estimatedDistance = position["estimatedDistance"] as? String,
+               let urgency = position["urgency"] as? String,
+               confidence > 50 { // Only include confident detections
                 
-                prompt += "- \(topLabel) (\(String(format: "%.0f", confidence))%): \(horizontal), \(distance) - \(urgency)\n"
+                prompt += "- \(topLabel): \(horizontal), \(estimatedDistance)\n"
+                prompt += "  Navigation: \(preciseDirection)\n"
+                prompt += "  Priority: \(urgency)\n\n"
             }
         }
         
         prompt += """
         
-        TASK: Analyze BOTH the object detection data above AND the actual camera image. Provide specific navigation guidance that includes:
+        GUIDANCE REQUIREMENTS:
+        You are providing navigation for someone who cannot see. Based on the camera image and object detection data above, give SPECIFIC, NATURAL guidance that includes:
         
-        1. Identify the EXACT obstacles you see in the image
-        2. Specify their PRECISE locations (left/right/center/distance)
-        3. Give CLEAR directional guidance (which way to move)
-        4. Mention any hazards the object detection might have missed
+        1. EXACT objects you see (be specific: "red sedan", not just "car")
+        2. PRECISE locations with measurements ("3 meters ahead on your right")
+        3. CLEAR movement instructions ("take 4 steps to your left", "turn 45 degrees right")
+        4. WALKING SPACE available ("you have 2 meters of clear space on the left")
+        5. SAFE PATH recommendations ("follow the left sidewalk for 5 meters")
         
-        Example good responses:
-        - "Red car approaching from right, step to left curb immediately"
-        - "Large tree trunk blocking center path, walk around to the right"
-        - "Person with dog ahead on left sidewalk, stay right lane"
-        - "Traffic cone and construction sign on right, use left walkway"
+        Be conversational but precise. Instead of "obstacle ahead", say "there's a blue mailbox 2 meters directly in front of you, step 3 feet to your right to go around it."
         
-        Be SPECIFIC about what obstacles exist and WHERE they are located. Maximum 25 words.
+        Good examples:
+        - "White SUV parked 4 meters on your right, sidewalk clear for 6 meters ahead"
+        - "Large oak tree 3 meters directly ahead, take 5 steps left to go around, then continue straight"
+        - "Person walking towards you on the right side, stay left, you have 2 meters clearance"
+        - "Construction barrier 2 meters ahead blocking center, go right 4 steps, clear path for 10 meters"
+        
+        Maximum 35 words but be very specific about distances and directions.
         """
         
         return prompt
@@ -871,6 +916,73 @@ class ViewController: UIViewController {
             }
         }.resume()
     }
+    
+    
+    // MARK: - Walkable Space Analysis (Fixed)
+    private func analyzeWalkableSpace(detectionData: [[String: Any]]) -> (leftClearance: String, centerPath: String, rightClearance: String, recommendedPath: String) {
+        
+        var leftBlocked = false
+        var centerBlocked = false
+        var rightBlocked = false
+        
+        var leftMinDistance: Double = 10.0  // Start with large distance
+        var centerMinDistance: Double = 10.0
+        var rightMinDistance: Double = 10.0
+        
+        for detection in detectionData {
+            guard let boundingBox = detection["boundingBox"] as? [String: Any],
+                  let normalized = boundingBox["normalized"] as? [String: Double],
+                  let x = normalized["x"],
+                  let width = normalized["width"] else { continue }
+            
+            // Fix: Handle the optional height properly
+            let height = normalized["height"] ?? 0.1
+            let area = width * height
+            
+            let centerX = x + width / 2
+            let estimatedMeters = max(1.0, 10.0 * (1.0 - area)) // Rough distance estimation
+            
+            // Categorize by horizontal position
+            if centerX < 0.33 { // Left side
+                leftBlocked = leftBlocked || area > 0.1
+                leftMinDistance = min(leftMinDistance, estimatedMeters)
+            } else if centerX < 0.67 { // Center
+                centerBlocked = centerBlocked || area > 0.15
+                centerMinDistance = min(centerMinDistance, estimatedMeters)
+            } else { // Right side
+                rightBlocked = rightBlocked || area > 0.1
+                rightMinDistance = min(rightMinDistance, estimatedMeters)
+            }
+        }
+        
+        // Generate clearance descriptions
+        let leftClearance = leftBlocked ?
+            "blocked at \(Int(leftMinDistance))m" :
+            "clear for \(Int(leftMinDistance))+ meters"
+        
+        let centerPath = centerBlocked ?
+            "blocked at \(Int(centerMinDistance))m" :
+            "clear for \(Int(centerMinDistance))+ meters"
+        
+        let rightClearance = rightBlocked ?
+            "blocked at \(Int(rightMinDistance))m" :
+            "clear for \(Int(rightMinDistance))+ meters"
+        
+        // Recommend best path
+        let recommendedPath: String
+        if !centerBlocked && centerMinDistance > 3 {
+            recommendedPath = "continue straight, center path clear"
+        } else if !leftBlocked && leftMinDistance > rightMinDistance {
+            recommendedPath = "move left, \(Int(leftMinDistance)) meters clearance"
+        } else if !rightBlocked {
+            recommendedPath = "move right, \(Int(rightMinDistance)) meters clearance"
+        } else {
+            recommendedPath = "obstacles detected, proceed carefully"
+        }
+        
+        return (leftClearance, centerPath, rightClearance, recommendedPath)
+    }
+
     
     // MARK: - Helper Functions
     private func convertPixelBufferToImageData(_ pixelBuffer: CVPixelBuffer) -> Data? {
