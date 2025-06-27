@@ -7,6 +7,8 @@ import Speech
 class ViewController: UIViewController {
     
     // MARK: - Properties
+    var speechRecognizer: SFSpeechRecognizer?
+    var isArabicMode: Bool = false
     private var videoCapture: VideoCapture!
     private var latestCapturedImageData: Data?
 
@@ -27,7 +29,6 @@ class ViewController: UIViewController {
     // Speech synthesis and recognition
     private let speechSynthesizer = AVSpeechSynthesizer()
     private let audioEngine = AVAudioEngine()
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     
@@ -52,10 +53,17 @@ class ViewController: UIViewController {
     
     // MARK: - View Lifecycle
     override func viewDidLoad() {
+    
+
+        speechRecognizer = SFSpeechRecognizer(locale: isArabicMode ? Locale(identifier: "ar-SA") : Locale(identifier: "en-US"))
+        
+
         super.viewDidLoad()
         view.bringSubviewToFront(microphoneButton)
 
-        
+        speechRecognizer = SFSpeechRecognizer(locale: isArabicMode ? Locale(identifier: "ar-SA") : Locale(identifier: "en-US"))
+
+
         configureAudioSession()
         setupSpeechRecognition()
         
@@ -197,7 +205,12 @@ class ViewController: UIViewController {
         recognitionRequest.shouldReportPartialResults = true
         
         // Start recognition task
-        recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+        guard let recognizer = speechRecognizer else {
+            print("Speech recognizer not available")
+            return
+        }
+
+        recognitionTask = recognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             guard let self = self else { return }
             
             if let result = result {
@@ -236,9 +249,22 @@ class ViewController: UIViewController {
         // Restore audio session for playback
         configureAudioSession()
     }
+    private func buildPrompt(from transcript: String) -> String {
+        var fullPrompt = transcript
+
+        // Add label values to help context
+        fullPrompt += " | Model Label: \(modelLabel.text ?? "")"
+        fullPrompt += " | Result Label: \(resultLabel.text ?? "")"
+        fullPrompt += " | Others Label: \(othersLabel.text ?? "")"
+
+        return fullPrompt
+    }
+
     
     private func sendVoicePromptToAPI(transcript: String, imageData: Data? = nil) {
         print("Sending voice prompt to API: \(transcript)")
+        //prompt
+        
         
         // Validate transcript
         guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -251,7 +277,8 @@ class ViewController: UIViewController {
         var messageContent: [[String: Any]] = [
             [
                 "type": "text",
-                "text": transcript
+                "text": buildPrompt(from: transcript)
+
             ]
         ]
         
@@ -567,7 +594,8 @@ class ViewController: UIViewController {
                 timestamp: timestamp.seconds,
                 criticalObstacles: criticalObstacles,
                 pathBlockers: pathBlockers,
-                environmentalHazards: environmentalHazards
+                environmentalHazards: environmentalHazards,
+                isArabicMode: isArabicMode
             )
         }
         
@@ -700,7 +728,8 @@ class ViewController: UIViewController {
         timestamp: Double,
         criticalObstacles: [String],
         pathBlockers: [String],
-        environmentalHazards: [String]
+        environmentalHazards: [String],
+        isArabicMode: Bool = false  // Add this parameter
     ) {
         print("🔄 Preparing Vision-Language API call...")
         
@@ -708,7 +737,8 @@ class ViewController: UIViewController {
             detectionData: detectionData,
             criticalObstacles: criticalObstacles,
             pathBlockers: pathBlockers,
-            environmentalHazards: environmentalHazards
+            environmentalHazards: environmentalHazards,
+            isArabicMode: isArabicMode
         )
         
         var messageContent: [[String: Any]] = [
@@ -730,12 +760,19 @@ class ViewController: UIViewController {
             ])
         }
         
+        // Set system prompt content based on language
+        let systemPromptContent = isArabicMode ? """
+        أنت مساعد ملاحة متقدم للمستخدمين ضعاف البصر. قم بتحليل بيانات كشف الكائنات والصورة الفعلية لتقديم إرشادات ملاحة دقيقة وقابلة للتنفيذ. كن محددًا بشأن العقبات، مواقعها الدقيقة، ومسارات التنقل الآمنة. اجعل الردود أقل من 30 كلمة لكنها دقيقة جدًا حول العقبات الموجودة ومواقعها.
+        """ : """
+        You are an advanced navigation assistant for visually impaired users. Analyze both the object detection data AND the actual image to provide precise, actionable navigation guidance. Be specific about obstacles, their exact locations, and safe navigation paths. Keep responses under 30 words but be very specific about what obstacles exist and where.
+        """
+        
         let llmRequest: [String: Any] = [
             "model": "Fanar-Oryx-IVU-1",
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are an advanced navigation assistant for visually impaired users. Analyze both the object detection data AND the actual image to provide precise, actionable navigation guidance. Be specific about obstacles, their exact locations, and safe navigation paths. Keep responses under 30 words but be very specific about what obstacles exist and where."
+                    "content": systemPromptContent
                 ],
                 [
                     "role": "user",
@@ -748,50 +785,75 @@ class ViewController: UIViewController {
         
         performVisionLanguageAPICall(requestData: llmRequest)
     }
+
     
     // MARK: - Enhanced Navigation Prompt with Spatial Intelligence
     private func createEnhancedNavigationPrompt(
         detectionData: [[String: Any]],
         criticalObstacles: [String],
         pathBlockers: [String],
-        environmentalHazards: [String]
+        environmentalHazards: [String],
+        isArabicMode: Bool = false
     ) -> String {
-        var prompt = "DETAILED NAVIGATION GUIDANCE FOR VISUALLY IMPAIRED USER\n\n"
+        // Header
+        var prompt = isArabicMode ?
+            "توجيهات ملاحة مفصلة لمستخدمين ضعاف البصر\n\n" :
+            "DETAILED NAVIGATION GUIDANCE FOR VISUALLY IMPAIRED USER\n\n"
         
         // Analyze available walking space
         let walkableSpaceAnalysis = analyzeWalkableSpace(detectionData: detectionData)
         
-        prompt += "WALKING SPACE ANALYSIS:\n"
-        prompt += "- Left side clearance: \(walkableSpaceAnalysis.leftClearance)\n"
-        prompt += "- Center path: \(walkableSpaceAnalysis.centerPath)\n"
-        prompt += "- Right side clearance: \(walkableSpaceAnalysis.rightClearance)\n"
-        prompt += "- Recommended direction: \(walkableSpaceAnalysis.recommendedPath)\n\n"
+        // Walking Space Analysis
+        prompt += isArabicMode ? "تحليل المساحة الممكن السير فيها:\n" : "WALKING SPACE ANALYSIS:\n"
         
+        prompt += isArabicMode ?
+            "- مساحة جانبية يسارية: \(walkableSpaceAnalysis.leftClearance)\n" :
+            "- Left side clearance: \(walkableSpaceAnalysis.leftClearance)\n"
+        
+        prompt += isArabicMode ?
+            "- مساحة وسطية: \(walkableSpaceAnalysis.centerPath)\n" :
+            "- Center path: \(walkableSpaceAnalysis.centerPath)\n"
+        
+        prompt += isArabicMode ?
+            "- مساحة جانبية يمينية: \(walkableSpaceAnalysis.rightClearance)\n" :
+            "- Right side clearance: \(walkableSpaceAnalysis.rightClearance)\n"
+        
+        prompt += isArabicMode ?
+            "- الاتجاه المقترح: \(walkableSpaceAnalysis.recommendedPath)\n\n" :
+            "- Recommended direction: \(walkableSpaceAnalysis.recommendedPath)\n\n"
+        
+        // Critical Obstacles
         if !criticalObstacles.isEmpty {
-            prompt += "🚨 IMMEDIATE DANGERS - STOP AND NAVIGATE AROUND:\n"
+            prompt += isArabicMode ? "🚨 مخاطر مباشرة - توقف وحاول الالتفاف:\n" : "🚨 IMMEDIATE DANGERS - STOP AND NAVIGATE AROUND:\n"
             for obstacle in criticalObstacles {
                 prompt += "- \(obstacle)\n"
             }
             prompt += "\n"
         }
         
+        // Path Blockers
         if !pathBlockers.isEmpty {
-            prompt += "🚧 PATH OBSTACLES - ALTERNATIVE ROUTE NEEDED:\n"
+            prompt += isArabicMode ? "🚧 عوائق في المسار - يحتاج لمسار بديل:\n" : "🚧 PATH OBSTACLES - ALTERNATIVE ROUTE NEEDED:\n"
             for blocker in pathBlockers {
                 prompt += "- \(blocker)\n"
             }
             prompt += "\n"
         }
         
+        // Environmental Hazards
         if !environmentalHazards.isEmpty {
-            prompt += "⚠️ ENVIRONMENTAL HAZARDS - PROCEED WITH CAUTION:\n"
+            prompt += isArabicMode ? "⚠️ مخاطر بيئية - توخ الحذر:\n" : "⚠️ ENVIRONMENTAL HAZARDS - PROCEED WITH CAUTION:\n"
             for hazard in environmentalHazards {
                 prompt += "- \(hazard)\n"
             }
             prompt += "\n"
         }
         
-        prompt += "PRECISE OBJECT LOCATIONS AND NAVIGATION INSTRUCTIONS:\n"
+        // Object Locations
+        prompt += isArabicMode ?
+            "مواقع الأجسام الدقيقة وتوجيهات الملاحة:\n" :
+            "PRECISE OBJECT LOCATIONS AND NAVIGATION INSTRUCTIONS:\n"
+        
         for detection in detectionData {
             if let topLabel = detection["topLabel"] as? String,
                let confidence = detection["topConfidence"] as? Double,
@@ -800,35 +862,79 @@ class ViewController: UIViewController {
                let preciseDirection = position["preciseDirection"] as? String,
                let estimatedDistance = position["estimatedDistance"] as? String,
                let urgency = position["urgency"] as? String,
-               confidence > 50 { // Only include confident detections
+               confidence > 50 {
                 
-                prompt += "- \(topLabel): \(horizontal), \(estimatedDistance)\n"
-                prompt += "  Navigation: \(preciseDirection)\n"
-                prompt += "  Priority: \(urgency)\n\n"
+                let translatedHorizontal = isArabicMode ?
+                    (horizontal == "left" ? "اليسار" : "اليمين") :
+                    horizontal
+                
+                let translatedDirection = isArabicMode ?
+                    preciseDirection
+                        .replacingOccurrences(of: "left", with: "اليسار")
+                        .replacingOccurrences(of: "right", with: "اليمين")
+                        .replacingOccurrences(of: "ahead", with: "أمامك")
+                    : preciseDirection
+                
+                let translatedUrgency = isArabicMode ?
+                    (urgency == "high" ? "عالي" :
+                     urgency == "medium" ? "متوسط" : "منخفض") :
+                    urgency
+                
+                prompt += isArabicMode ?
+                    "- \(topLabel): \(translatedHorizontal), \(estimatedDistance)\n" :
+                    "- \(topLabel): \(horizontal), \(estimatedDistance)\n"
+                
+                prompt += isArabicMode ?
+                    "  توجيهات: \(translatedDirection)\n" :
+                    "  Navigation: \(preciseDirection)\n"
+                
+                prompt += isArabicMode ?
+                    "  أولوية: \(translatedUrgency)\n\n" :
+                    "  Priority: \(urgency)\n\n"
             }
         }
         
-        prompt += """
-        
-        GUIDANCE REQUIREMENTS:
-        You are providing navigation for someone who cannot see. Based on the camera image and object detection data above, give SPECIFIC, NATURAL guidance that includes:
-        
-        1. EXACT objects you see (be specific: "red sedan", not just "car")
-        2. PRECISE locations with measurements ("3 meters ahead on your right")
-        3. CLEAR movement instructions ("take 4 steps to your left", "turn 45 degrees right")
-        4. WALKING SPACE available ("you have 2 meters of clear space on the left")
-        5. SAFE PATH recommendations ("follow the left sidewalk for 5 meters")
-        
-        Be conversational but precise. Instead of "obstacle ahead", say "there's a blue mailbox 2 meters directly in front of you, step 3 feet to your right to go around it."
-        
-        Good examples:
-        - "White SUV parked 4 meters on your right, sidewalk clear for 6 meters ahead"
-        - "Large oak tree 3 meters directly ahead, take 5 steps left to go around, then continue straight"
-        - "Person walking towards you on the right side, stay left, you have 2 meters clearance"
-        - "Construction barrier 2 meters ahead blocking center, go right 4 steps, clear path for 10 meters"
-        
-        Maximum 35 words but be very specific about distances and directions.
-        """
+        // Guidance Requirements
+        prompt += isArabicMode ? """
+            
+            متطلبات التوجيه:
+            أنت تقدم إرشادات لشخص لا يستطيع الرؤية. بناءً على الصورة وتحليل الكائنات:
+            
+            ١. حدد الكائنات بدقة ("سيارة حمراء" وليس فقط "سيارة")
+            ٢. المسافات والاتجاهات ("٣ أمتار أمامك على اليمين")
+            ٣. تعليمات حركة واضحة ("اتجه خطوتين لليسار")
+            ٤. المساحة المتاحة ("لديك متران على يسارك")
+            ٥. المسار الآمن ("اسلك الرصيف الأيسر لمسافة ٥ أمتار")
+            
+            كن واضحاً ودقيقاً. بدلاً من "عائق أمامك"، قل "يوجد صندوق بريد أزرق على بعد مترين أمامك تماماً، اتجه متراً واحداً لليمين لتجاوزه"
+            
+            أمثلة جيدة:
+            - "سيارة دفع رباعي بيضاء متوقفة على بعد ٤ أمتار يمينك، الرصيف خالٍ لمسافة ٦ أمتار أمامك"
+            - "شجرة بلوط كبيرة على بعد ٣ أمتار أمامك تماماً، اتجه ٥ خطوات لليسار لتجاوزها ثم استمر للأمام"
+            - "شخص يمشي باتجاهك على الجانب الأيمن، ابق على اليسار لديك مسافة مترين خالية"
+            - "حاجز بناء على بعد مترين أمامك يعترض المنتصف، اتجه ٤ خطوات لليمين، مسار خالٍ لمسافة ١٠ أمتار"
+            
+            بحد أقصى ٣٥ كلمة مع الدقة في المسافات والاتجاهات.
+            """ : """
+            GUIDANCE REQUIREMENTS:
+            You are providing navigation for someone who cannot see. Based on the camera image and object detection data above, give SPECIFIC, NATURAL guidance that includes:
+            
+            1. EXACT objects you see (be specific: "red sedan", not just "car")
+            2. PRECISE locations with measurements ("3 meters ahead on your right")
+            3. CLEAR movement instructions ("take 4 steps to your left", "turn 45 degrees right")
+            4. WALKING SPACE available ("you have 2 meters of clear space on the left")
+            5. SAFE PATH recommendations ("follow the left sidewalk for 5 meters")
+            
+            Be conversational but precise. Instead of "obstacle ahead", say "there's a blue mailbox 2 meters directly in front of you, step 3 feet to your right to go around it."
+            
+            Good examples:
+            - "White SUV parked 4 meters on your right, sidewalk clear for 6 meters ahead"
+            - "Large oak tree 3 meters directly ahead, take 5 steps left to go around, then continue straight"
+            - "Person walking towards you on the right side, stay left, you have 2 meters clearance"
+            - "Construction barrier 2 meters ahead blocking center, go right 4 steps, clear path for 10 meters"
+            
+            Maximum 35 words but be very specific about distances and directions.
+            """
         
         return prompt
     }
