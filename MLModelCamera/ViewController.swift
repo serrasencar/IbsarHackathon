@@ -31,6 +31,10 @@ class ViewController: UIViewController {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     
+    // Add these properties to your ViewController class
+    private var audioPlayer: AVAudioPlayer?
+    private let ttsQueue = DispatchQueue(label: "com.shu223.tts.queue")
+    
     // Vibration
     private let feedbackGenerator = UIImpactFeedbackGenerator(style: .heavy)
     
@@ -445,13 +449,15 @@ class ViewController: UIViewController {
             print("❌ Failed to perform model inference: \(error)")
         }
     }
-    // MARK: - Updated processObjectDetectionObservations method
+    
     @available(iOS 12.0, *)
     private func processObjectDetectionObservations(_ results: [VNRecognizedObjectObservation], imageBuffer: CVPixelBuffer, timestamp: CMTime) {
         print("🎯 Detected \(results.count) objects:")
         
         var detectionData: [[String: Any]] = []
-        var priorityObstacles: [(String, Int)] = [] // (description, priority)
+        var criticalObstacles: [String] = []
+        var pathBlockers: [String] = []
+        var environmentalHazards: [String] = []
         
         for (index, result) in results.enumerated() {
             let boundingBox = result.boundingBox
@@ -465,23 +471,13 @@ class ViewController: UIViewController {
             
             let (horizontalPos, verticalPos, distance, urgency) = analyzeObjectPosition(boundingBox: boundingBox)
             
-            // Extract distance in meters for priority calculation
-            let distanceRegex = try! NSRegularExpression(pattern: "\\d+\\.?\\d*")
-            let distanceString = distance
-            let range = NSRange(location: 0, length: distanceString.utf16.count)
-            var distanceMeters: Double = 10.0 // Default far distance
-            
-            if let match = distanceRegex.firstMatch(in: distanceString, options: [], range: range) {
-                let matchString = (distanceString as NSString).substring(with: match.range)
-                distanceMeters = Double(matchString) ?? 10.0
-            }
-            
-            // Trigger vibration for critical situations
-            if urgency.contains("CRITICAL") || distanceMeters <= 1.5 {
+            // Trigger vibration for high urgency OR very close objects
+            if urgency == "HIGH - directly in path" || distance == "very close" {
                 DispatchQueue.main.async {
                     self.feedbackGenerator.impactOccurred()
                 }
             }
+
             
             print("\n🔸 Object \(index + 1):")
             print("   📍 Position: \(horizontalPos), \(verticalPos)")
@@ -507,14 +503,15 @@ class ViewController: UIViewController {
                 ])
             }
             
-            // Determine if object is in path
-            let centerX = boundingBox.origin.x + (boundingBox.size.width / 2.0)
-            let isInPath = centerX > 0.25 && centerX < 0.75
+            let obstacleInfo = "\(topLabel) at \(horizontalPos) (\(distance))"
             
-            let (category, priority) = categorizeObjectWithPriority(topLabel, distance: distanceMeters, isInPath: isInPath)
-            
-            let obstacleDescription = "\(topLabel) at \(horizontalPos) (\(distance))"
-            priorityObstacles.append((obstacleDescription, priority))
+            if isMovingVehicle(topLabel) || isDangerousObject(topLabel) {
+                criticalObstacles.append("🚨 \(obstacleInfo) - IMMEDIATE DANGER")
+            } else if isPathBlocker(topLabel) {
+                pathBlockers.append("🚧 \(obstacleInfo) - PATH BLOCKED")
+            } else if isEnvironmentalHazard(topLabel) {
+                environmentalHazards.append("⚠️ \(obstacleInfo) - CAUTION NEEDED")
+            }
             
             let objectData: [String: Any] = [
                 "id": index,
@@ -540,19 +537,13 @@ class ViewController: UIViewController {
                     "horizontal": horizontalPos,
                     "vertical": verticalPos,
                     "distance": distance,
-                    "urgency": urgency,
-                    "distanceMeters": distanceMeters,
-                    "isInPath": isInPath
+                    "urgency": urgency
                 ],
-                "category": category,
-                "priority": priority
+                "category": categorizeObject(topLabel)
             ]
             
             detectionData.append(objectData)
         }
-        
-        // Sort obstacles by priority for better navigation guidance
-        priorityObstacles.sort { $0.1 < $1.1 }
         
         let currentTime = CACurrentMediaTime()
         if currentTime - lastAPICallTime >= apiCallInterval {
@@ -560,17 +551,19 @@ class ViewController: UIViewController {
             
             print("\n🚀 SENDING TO VISION-LANGUAGE API:")
             print("📊 Detection Data Count: \(detectionData.count) objects")
-            print("🎯 Priority Obstacles: \(priorityObstacles.prefix(3).map { $0.0 })")
+            print("🚨 Critical Obstacles: \(criticalObstacles.count)")
+            print("🚧 Path Blockers: \(pathBlockers.count)")
+            print("⚠️ Environmental Hazards: \(environmentalHazards.count)")
             
             let imageData = convertPixelBufferToImageData(imageBuffer)
-            self.latestCapturedImageData = imageData
+            self.latestCapturedImageData = imageData  // ✅ Save for other use (like voice prompt)
             sendToVisionLanguageAPI(
                 detectionData: detectionData,
                 imageData: imageData,
                 timestamp: timestamp.seconds,
-                criticalObstacles: [],
-                pathBlockers: [],
-                environmentalHazards: []
+                criticalObstacles: criticalObstacles,
+                pathBlockers: pathBlockers,
+                environmentalHazards: environmentalHazards
             )
         }
         
@@ -582,7 +575,8 @@ class ViewController: UIViewController {
             self.bbView.setNeedsDisplay()
         }
     }
-    // MARK: - Enhanced Object Analysis with Improved Distance Estimation
+    
+    // MARK: - Object Analysis
     private func analyzeObjectPosition(boundingBox: CGRect) -> (horizontal: String, vertical: String, distance: String, urgency: String) {
         let x = boundingBox.origin.x
         let y = boundingBox.origin.y
@@ -590,212 +584,85 @@ class ViewController: UIViewController {
         let height = boundingBox.size.height
         let area = width * height
         
-        // Calculate center of bounding box
-        let centerX = x + (width / 2.0)
-        let centerY = y + (height / 2.0)
-        
-        // Enhanced horizontal position analysis
         let horizontalPos: String
-        let horizontalDistance: String
-        if centerX < 0.1 {
-            horizontalPos = "far left edge"
-            horizontalDistance = "4-5 meters to left"
-        } else if centerX < 0.25 {
+        if x < 0.15 {
+            horizontalPos = "far left side"
+        } else if x < 0.35 {
             horizontalPos = "left side"
-            horizontalDistance = "2-3 meters to left"
-        } else if centerX < 0.4 {
-            horizontalPos = "slightly left"
-            horizontalDistance = "1-2 meters to left"
-        } else if centerX < 0.6 {
+        } else if x < 0.45 {
+            horizontalPos = "slightly left of center"
+        } else if x < 0.55 {
             horizontalPos = "directly ahead"
-            horizontalDistance = "straight ahead"
-        } else if centerX < 0.75 {
-            horizontalPos = "slightly right"
-            horizontalDistance = "1-2 meters to right"
-        } else if centerX < 0.9 {
+        } else if x < 0.65 {
+            horizontalPos = "slightly right of center"
+        } else if x < 0.85 {
             horizontalPos = "right side"
-            horizontalDistance = "2-3 meters to right"
         } else {
-            horizontalPos = "far right edge"
-            horizontalDistance = "4-5 meters to right"
+            horizontalPos = "far right side"
         }
         
-        // Enhanced vertical position analysis
         let verticalPos: String
-        if y > 0.7 {
+        if y < 0.2 {
             verticalPos = "ground level"
-        } else if y > 0.4 {
-            verticalPos = "waist to chest height"
-        } else if y > 0.1 {
-            verticalPos = "eye to head level"
+        } else if y < 0.5 {
+            verticalPos = "waist height"
+        } else if y < 0.8 {
+            verticalPos = "eye level"
         } else {
             verticalPos = "overhead"
         }
         
-        // IMPROVED DISTANCE ESTIMATION
-        let (estimatedDistance, distanceMeters) = calculateRealWorldDistance(
-            boundingBox: boundingBox,
-            area: area
-        )
-        
-        // Enhanced urgency calculation based on distance and position
-        let urgency: String
-        let isInPath = centerX > 0.25 && centerX < 0.75 // Within central walking path
-        let isGroundLevel = y > 0.5 // Ground level obstacles
-        
-        if distanceMeters <= 1.5 && isInPath && isGroundLevel {
-            urgency = "CRITICAL - immediate collision risk"
-        } else if distanceMeters <= 2.5 && isInPath {
-            urgency = "HIGH - obstacle in path"
-        } else if distanceMeters <= 4.0 && isInPath {
-            urgency = "MEDIUM - approaching obstacle"
-        } else if distanceMeters <= 2.0 {
-            urgency = "MEDIUM - very close to side"
+        let distance: String
+        if area > 0.3 {
+            distance = "very close"
+        } else if area > 0.15 {
+            distance = "close"
+        } else if area > 0.05 {
+            distance = "medium distance"
         } else {
-            urgency = "LOW - safe distance"
+            distance = "far away"
         }
         
-        return (horizontalPos, verticalPos, estimatedDistance, urgency)
+        let urgency: String
+        if area > 0.2 && x > 0.3 && x < 0.7 && y < 0.5 {
+            urgency = "HIGH - directly in path"
+        } else if area > 0.1 && y < 0.3 {
+            urgency = "MEDIUM - potential obstacle"
+        } else {
+            urgency = "LOW - not immediate concern"
+        }
+        
+        return (horizontalPos, verticalPos, distance, urgency)
     }
     
-    // MARK: - Real-World Distance Calculation
-    private func calculateRealWorldDistance(boundingBox: CGRect, area: CGFloat) -> (description: String, meters: Double) {
-        let width = boundingBox.size.width
-        let height = boundingBox.size.height
-        let centerY = boundingBox.origin.y + (height / 2.0)
-        
-        // Distance estimation based on multiple factors
-        var estimatedMeters: Double
-        
-        // Primary estimation based on bounding box area
-        // These values are calibrated approximations for common objects
-        if area > 0.35 {
-            estimatedMeters = 0.5 // Very close
-        } else if area > 0.25 {
-            estimatedMeters = 1.0
-        } else if area > 0.15 {
-            estimatedMeters = 1.5
-        } else if area > 0.10 {
-            estimatedMeters = 2.5
-        } else if area > 0.06 {
-            estimatedMeters = 3.5
-        } else if area > 0.03 {
-            estimatedMeters = 5.0
-        } else if area > 0.015 {
-            estimatedMeters = 7.5
-        } else {
-            estimatedMeters = 10.0
-        }
-        
-        // Adjustment based on vertical position (perspective correction)
-        // Objects lower in frame are typically closer
-        let verticalAdjustment = 1.0 + (centerY * 0.3) // 0% to 30% adjustment
-        estimatedMeters *= verticalAdjustment
-        
-        // Adjustment based on object width (wider objects typically closer)
-        let widthAdjustment = max(0.7, 1.0 - (width * 0.5))
-        estimatedMeters *= widthAdjustment
-        
-        // Create descriptive distance
-        let description: String
-        if estimatedMeters <= 1.0 {
-            description = "very close (under 1 meter)"
-        } else if estimatedMeters <= 2.0 {
-            description = "close (\(String(format: "%.1f", estimatedMeters)) meters)"
-        } else if estimatedMeters <= 4.0 {
-            description = "nearby (\(String(format: "%.1f", estimatedMeters)) meters)"
-        } else if estimatedMeters <= 7.0 {
-            description = "moderate distance (\(String(format: "%.0f", estimatedMeters)) meters)"
-        } else {
-            description = "far away (\(String(format: "%.0f", estimatedMeters)) meters)"
-        }
-        
-        return (description, estimatedMeters)
-    }
-
     private func isMovingVehicle(_ label: String) -> Bool {
-        let movingVehicles = ["car", "truck", "bus", "motorcycle", "bicycle", "train", "boat", "airplane"]
-        return movingVehicles.contains(label.lowercased())
+        let movingVehicles = ["car", "truck", "bus", "motorcycle", "bicycle", "scooter", "van", "taxi"]
+        return movingVehicles.contains { label.lowercased().contains($0) }
     }
-
+    
     private func isDangerousObject(_ label: String) -> Bool {
-        // Animals that could be unpredictable or dangerous, plus moving objects
-        let dangerous = ["person", "dog", "cat", "horse", "cow", "elephant", "bear", "sheep", "zebra", "giraffe"]
-        return dangerous.contains(label.lowercased())
+        let dangerous = ["person walking", "dog", "construction", "traffic", "barrier"]
+        return dangerous.contains { label.lowercased().contains($0) }
     }
-
+    
     private func isPathBlocker(_ label: String) -> Bool {
-        // Static objects that could block walking paths
-        let pathBlockers = [
-            "chair", "couch", "dining table", "bench", "bed",
-            "suitcase", "backpack", "handbag", "umbrella",
-            "potted plant", "vase", "refrigerator", "microwave", "oven", "toaster",
-            "tv", "laptop", "bicycle", "motorcycle", "skateboard", "surfboard", "snowboard", "skis",
-            "stop sign", "traffic light", "fire hydrant", "parking meter"
-        ]
-        return pathBlockers.contains(label.lowercased())
+        let pathBlockers = ["chair", "table", "bench", "trash can", "pole", "tree", "fence", "sign", "hydrant", "barrier", "cone"]
+        return pathBlockers.contains { label.lowercased().contains($0) }
     }
-
+    
     private func isEnvironmentalHazard(_ label: String) -> Bool {
-        // Objects that indicate potential environmental hazards or areas requiring caution
-        let hazards = [
-            "knife", "scissors", "baseball bat", "tennis racket",
-            "hot dog", "pizza", "cake", "donut" // food items that might indicate dining areas with potential spills
-        ]
-        return hazards.contains(label.lowercased())
+        let hazards = ["wet floor", "stairs", "step", "curb", "hole", "construction", "caution"]
+        return hazards.contains { label.lowercased().contains($0) }
     }
-
+    
     private func categorizeObject(_ label: String) -> String {
-        let lowerLabel = label.lowercased()
-        
-        if isMovingVehicle(lowerLabel) { return "MOVING_VEHICLE" }
-        if isDangerousObject(lowerLabel) { return "LIVING_BEING" }
-        if isPathBlocker(lowerLabel) { return "PATH_BLOCKER" }
-        if isEnvironmentalHazard(lowerLabel) { return "POTENTIAL_HAZARD" }
-        
-        // Additional specific categorizations for navigation context
-        let furniture = ["chair", "couch", "dining table", "bench", "bed"]
-        let electronics = ["tv", "laptop", "cell phone", "microwave", "refrigerator", "oven", "toaster"]
-        let sports = ["sports ball", "tennis racket", "baseball bat", "baseball glove", "frisbee", "kite", "skateboard", "surfboard", "snowboard", "skis"]
-        let containers = ["suitcase", "backpack", "handbag", "bottle", "cup", "bowl", "wine glass"]
-        let food = ["banana", "apple", "orange", "carrot", "broccoli", "hot dog", "pizza", "cake", "donut", "sandwich"]
-        
-        if furniture.contains(lowerLabel) { return "FURNITURE" }
-        if electronics.contains(lowerLabel) { return "ELECTRONICS" }
-        if sports.contains(lowerLabel) { return "SPORTS_EQUIPMENT" }
-        if containers.contains(lowerLabel) { return "CONTAINER" }
-        if food.contains(lowerLabel) { return "FOOD_ITEM" }
-        
+        if isMovingVehicle(label) { return "MOVING_VEHICLE" }
+        if isDangerousObject(label) { return "DANGER" }
+        if isPathBlocker(label) { return "PATH_BLOCKER" }
+        if isEnvironmentalHazard(label) { return "ENVIRONMENTAL_HAZARD" }
         return "GENERAL_OBJECT"
     }
     
-    // MARK: - Enhanced Object Categorization with Distance-Aware Priority
-    private func categorizeObjectWithPriority(_ label: String, distance: Double, isInPath: Bool) -> (category: String, priority: Int) {
-        let lowerLabel = label.lowercased()
-        
-        // Priority: 1 = Critical, 2 = High, 3 = Medium, 4 = Low
-        var basePriority: Int
-        var category: String
-        
-        if isMovingVehicle(lowerLabel) {
-            category = "MOVING_VEHICLE"
-            basePriority = 1 // Always critical
-        } else if isDangerousObject(lowerLabel) {
-            category = "LIVING_BEING"
-            basePriority = distance <= 3.0 ? 1 : 2
-        } else if isPathBlocker(lowerLabel) {
-            category = "PATH_BLOCKER"
-            basePriority = (distance <= 2.0 && isInPath) ? 2 : 3
-        } else if isEnvironmentalHazard(lowerLabel) {
-            category = "POTENTIAL_HAZARD"
-            basePriority = distance <= 1.5 ? 2 : 4
-        } else {
-            category = "GENERAL_OBJECT"
-            basePriority = (distance <= 1.0 && isInPath) ? 3 : 4
-        }
-        
-        return (category, basePriority)
-    }
     // MARK: - API Integration
     private func sendToVisionLanguageAPI(
         detectionData: [[String: Any]],
@@ -852,27 +719,42 @@ class ViewController: UIViewController {
         performVisionLanguageAPICall(requestData: llmRequest)
     }
     
-    // MARK: - Enhanced Navigation Prompt with Precise Distance Information
     private func createEnhancedNavigationPrompt(
         detectionData: [[String: Any]],
         criticalObstacles: [String],
         pathBlockers: [String],
         environmentalHazards: [String]
     ) -> String {
+        var prompt = "NAVIGATION ANALYSIS FOR VISUALLY IMPAIRED USER\n\n"
         
-        var prompt = """
-        VISUAL NAVIGATION ANALYSIS - REAL-TIME ENVIRONMENT ASSESSMENT
+        prompt += "OBJECT DETECTION SUMMARY:\n"
         
-        CURRENT SITUATION: You are helping a visually impaired person navigate safely through their environment.
+        if !criticalObstacles.isEmpty {
+            prompt += "🚨 CRITICAL DANGERS:\n"
+            for obstacle in criticalObstacles {
+                prompt += "- \(obstacle)\n"
+            }
+        }
         
-        """
+        if !pathBlockers.isEmpty {
+            prompt += "\n🚧 PATH OBSTACLES:\n"
+            for blocker in pathBlockers {
+                prompt += "- \(blocker)\n"
+            }
+        }
         
-        // Organize objects by priority and distance
-        var criticalItems: [String] = []
-        var highPriorityItems: [String] = []
-        var mediumPriorityItems: [String] = []
-        var safeItems: [String] = []
+        if !environmentalHazards.isEmpty {
+            prompt += "\n⚠️ ENVIRONMENTAL HAZARDS:\n"
+            for hazard in environmentalHazards {
+                prompt += "- \(hazard)\n"
+            }
+        }
         
+        if criticalObstacles.isEmpty && pathBlockers.isEmpty && environmentalHazards.isEmpty {
+            prompt += "✅ NO MAJOR OBSTACLES DETECTED\n"
+        }
+        
+        prompt += "\nDETAILED OBJECT POSITIONS:\n"
         for detection in detectionData {
             if let topLabel = detection["topLabel"] as? String,
                let confidence = detection["topConfidence"] as? Double,
@@ -881,110 +763,31 @@ class ViewController: UIViewController {
                let distance = position["distance"] as? String,
                let urgency = position["urgency"] as? String {
                 
-                let item = "\(topLabel) located \(horizontal) at \(distance)"
-                
-                if urgency.contains("CRITICAL") {
-                    criticalItems.append("🚨 \(item) - IMMEDIATE DANGER")
-                } else if urgency.contains("HIGH") {
-                    highPriorityItems.append("⚠️ \(item) - NEEDS ATTENTION")
-                } else if urgency.contains("MEDIUM") {
-                    mediumPriorityItems.append("📍 \(item) - BE AWARE")
-                } else {
-                    safeItems.append("✓ \(item) - SAFE DISTANCE")
-                }
+                prompt += "- \(topLabel) (\(String(format: "%.0f", confidence))%): \(horizontal), \(distance) - \(urgency)\n"
             }
-        }
-        
-        // Add critical items first
-        if !criticalItems.isEmpty {
-            prompt += "🚨 IMMEDIATE ATTENTION REQUIRED:\n"
-            for item in criticalItems {
-                prompt += "\(item)\n"
-            }
-            prompt += "\n"
-        }
-        
-        // Add high priority items
-        if !highPriorityItems.isEmpty {
-            prompt += "⚠️ NAVIGATION OBSTACLES:\n"
-            for item in highPriorityItems {
-                prompt += "\(item)\n"
-            }
-            prompt += "\n"
-        }
-        
-        // Add medium priority for context
-        if !mediumPriorityItems.isEmpty {
-            prompt += "📍 ENVIRONMENTAL AWARENESS:\n"
-            for item in mediumPriorityItems {
-                prompt += "\(item)\n"
-            }
-            prompt += "\n"
-        }
-        
-        // Add safe items for confidence
-        if !safeItems.isEmpty && (criticalItems.isEmpty && highPriorityItems.isEmpty) {
-            prompt += "✓ SAFE ENVIRONMENT DETECTED:\n"
-            for item in safeItems.take(3) { // Limit to 3 for brevity
-                prompt += "\(item)\n"
-            }
-            prompt += "\n"
         }
         
         prompt += """
         
-        NAVIGATION GUIDANCE REQUIREMENTS:
+        TASK: Analyze BOTH the object detection data above AND the actual camera image. Provide specific navigation guidance that includes:
         
-        You are an expert mobility instructor with years of experience helping visually impaired individuals. Your role is to provide:
+        1. Identify the EXACT obstacles you see in the image
+        2. Specify their PRECISE locations (left/right/center/distance)
+        3. Give CLEAR directional guidance (which way to move)
+        4. Mention any hazards the object detection might have missed
         
-        1. PRECISE DISTANCE GUIDANCE:
-           - Use the EXACT meter measurements provided above
-           - Give specific walking directions: "Walk straight for 3 meters" or "In 2 meters, step left"
-           - Provide reference points: "The chair is 1.5 meters to your right"
+        Example good responses:
+        - "Red car approaching from right, step to left curb immediately"
+        - "Large tree trunk blocking center path, walk around to the right"
+        - "Person with dog ahead on left sidewalk, stay right lane"
+        - "Traffic cone and construction sign on right, use left walkway"
         
-        2. CLEAR DIRECTIONAL INSTRUCTIONS:
-           - "Continue straight ahead"
-           - "Step 1 meter to your left" 
-           - "Turn right and walk 4 meters"
-           - "Bear slightly left for 2 meters"
-        
-        3. SAFETY-FIRST APPROACH:
-           - Always address critical/high priority items first
-           - Give specific avoidance instructions for dangerous objects
-           - Provide reassurance when path is clear
-        
-        4. SUPPORTIVE COMMUNICATION:
-           - Use encouraging, warm tone
-           - Build confidence: "Perfect!", "You're doing great!", "Safe path ahead"
-           - Be specific but not overwhelming
-        
-        RESPONSE EXAMPLES:
-        
-        For Critical Situations:
-        "Stop! Car approaching 1 meter ahead on right. Step 2 meters left immediately, then continue straight."
-        
-        For High Priority:
-        "Chair blocking path 2.5 meters ahead. Step left now, walk straight 3 meters, then center again."
-        
-        For Clear Paths:
-        "Perfect! Clear path straight ahead for 8 meters. Continue confidently at normal pace."
-        
-        For Side Obstacles:
-        "Bicycle 1.5 meters to your right. Your left path is completely clear for 6 meters ahead."
-        
-        CRITICAL RULES:
-        - Always mention specific distances in meters
-        - Address the most urgent obstacle first
-        - Give one clear action at a time
-        - Maximum 30 words but be precise about distances and directions
-        - Use encouraging language while being specific about safety
-        
-        Analyze the provided detections and image to give precise, caring navigation guidance.
+        Be SPECIFIC about what obstacles exist and WHERE they are located. Maximum 25 words.
         """
         
         return prompt
     }
-
+    
     private func performVisionLanguageAPICall(requestData: [String: Any]) {
         guard let url = URL(string: "\(apiBaseURL)/chat/completions") else {
             print("❌ Invalid API URL")
@@ -1083,42 +886,247 @@ class ViewController: UIViewController {
         return uiImage.jpegData(compressionQuality: 0.7)
     }
     
-    private func configureAudioSession() {
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .default, options: [.duckOthers])
-            try audioSession.setActive(true)
-            print("✅ Audio session configured successfully")
-        } catch {
-            print("❌ Failed to configure audio session: \(error)")
+    // MARK: - Enhanced TTS Implementation with Better Error Handling
+
+    private func speakText(_ text: String) {
+        print("🔊 Requesting TTS from Fanar API: \(text)")
+        
+        // Stop any currently playing audio
+        audioPlayer?.stop()
+        
+        // Stop built-in speech synthesizer if it's running
+        if speechSynthesizer.isSpeaking {
+            speechSynthesizer.stopSpeaking(at: .immediate)
+        }
+        
+        // Use async queue for TTS request
+        ttsQueue.async { [weak self] in
+            self?.requestTTSFromFanar(text: text)
         }
     }
-    
-    private func speakText(_ text: String) {
-        print("🔊 Attempting to speak: \(text)")
+
+    // MARK: - Corrected TTS Implementation for Fanar API
+
+    private func requestTTSFromFanar(text: String) {
+        print("🚀 Starting TTS request for: \(text)")
+        
+        // ✅ FIXED: Correct URL construction with /audio/speech endpoint
+        guard let url = URL(string: "\(apiBaseURL)/audio/speech") else {
+            print("❌ Invalid TTS API URL: \(apiBaseURL)/audio/speech")
+            fallbackToBuiltInTTS(text)
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30.0
+        
+        // ✅ FIXED: Correct TTS request payload matching the working example
+        let ttsRequest: [String: Any] = [
+            "model": "Fanar-Aura-TTS-1",
+            "input": text,
+            "voice": "default"
+        ]
+        
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: ttsRequest)
+            request.httpBody = jsonData
+            
+            // Log the request for debugging
+            if let requestString = String(data: jsonData, encoding: .utf8) {
+                print("📤 TTS Request Body: \(requestString)")
+            }
+            
+            print("📤 Sending TTS request to: \(url)")
+            
+            URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                
+                // Handle network errors
+                if let error = error {
+                    print("❌ TTS Network Error: \(error.localizedDescription)")
+                    self?.fallbackToBuiltInTTS(text)
+                    return
+                }
+                
+                // Check if we received data
+                guard let data = data else {
+                    print("❌ No audio data received from TTS API")
+                    self?.fallbackToBuiltInTTS(text)
+                    return
+                }
+                
+                print("📥 Received \(data.count) bytes of audio data")
+                
+                // Check HTTP response status
+                if let httpResponse = response as? HTTPURLResponse {
+                    print("📡 TTS API Response Status: \(httpResponse.statusCode)")
+                    
+                    if httpResponse.statusCode != 200 {
+                        // Try to parse error response
+                        if let responseString = String(data: data, encoding: .utf8) {
+                            print("❌ TTS API Error Response: \(responseString)")
+                        }
+                        
+                        // Handle specific error codes
+                        switch httpResponse.statusCode {
+                        case 401:
+                            print("❌ Unauthorized - Check API key")
+                        case 403:
+                            print("❌ Forbidden - TTS endpoint might not be enabled")
+                        case 404:
+                            print("❌ Not Found - Check TTS endpoint URL")
+                        case 429:
+                            print("❌ Rate Limited - Too many requests")
+                        case 500:
+                            print("❌ Internal Server Error")
+                        default:
+                            print("❌ HTTP Error \(httpResponse.statusCode)")
+                        }
+                        
+                        self?.fallbackToBuiltInTTS(text)
+                        return
+                    }
+                }
+                
+                // ✅ The response should be direct audio data (MP3 format)
+                // Check Content-Type header to verify it's audio
+                if let httpResponse = response as? HTTPURLResponse,
+                   let contentType = httpResponse.allHeaderFields["Content-Type"] as? String {
+                    print("📊 Response Content-Type: \(contentType)")
+                    
+                    // Verify it's audio content
+                    if !contentType.contains("audio") && !contentType.contains("octet-stream") {
+                        print("❌ Unexpected content type, expected audio but got: \(contentType)")
+                        self?.fallbackToBuiltInTTS(text)
+                        return
+                    }
+                }
+                
+                // Try to play the audio data
+                self?.playAudioData(data, originalText: text)
+                
+            }.resume()
+            
+        } catch {
+            print("❌ Failed to serialize TTS request: \(error)")
+            fallbackToBuiltInTTS(text)
+        }
+    }
+
+    // ✅ Enhanced audio playback to handle MP3 format from Fanar API
+    private func playAudioData(_ audioData: Data, originalText: String) {
+        print("🎵 Attempting to play audio data: \(audioData.count) bytes")
         
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
+            do {
+                // Configure audio session BEFORE creating player
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .default, options: [.duckOthers])
+                try audioSession.setActive(true)
+                print("✅ Audio session configured for playback")
+                
+                // Create audio player with the received data
+                self.audioPlayer = try AVAudioPlayer(data: audioData)
+                
+                guard let player = self.audioPlayer else {
+                    print("❌ Failed to create audio player")
+                    self.fallbackToBuiltInTTS(originalText)
+                    return
+                }
+                
+                // Configure player
+                player.delegate = self
+                player.volume = 1.0
+                player.prepareToPlay()
+                
+                print("🎵 Audio player created successfully")
+                print("🎵 Audio duration: \(player.duration) seconds")
+                
+                // Play the audio
+                let success = player.play()
+                if success {
+                    print("✅ Fanar TTS audio playback started for: \(originalText)")
+                } else {
+                    print("❌ Failed to start audio playback")
+                    self.fallbackToBuiltInTTS(originalText)
+                }
+                
+            } catch {
+                print("❌ Failed to create/configure audio player: \(error)")
+                print("❌ Error details: \(error.localizedDescription)")
+                
+                // Log more specific error information
+                if let nsError = error as NSError? {
+                    print("❌ Error domain: \(nsError.domain)")
+                    print("❌ Error code: \(nsError.code)")
+                    if nsError.domain == NSOSStatusErrorDomain {
+                        print("❌ OSStatus error - likely audio format issue")
+                    }
+                }
+                
+                self.fallbackToBuiltInTTS(originalText)
+            }
+        }
+    }
+
+    // ✅ Test function you can call to verify TTS is working
+    private func testFanarTTS() {
+        print("🧪 Testing Fanar TTS...")
+        speakText("Hello! This is a test of the Fanar text to speech API.")
+    }
+    
+    private func fallbackToBuiltInTTS(_ text: String) {
+        print("⚠️ Falling back to built-in TTS for: \(text)")
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Stop any existing speech
             if self.speechSynthesizer.isSpeaking {
                 self.speechSynthesizer.stopSpeaking(at: .immediate)
             }
             
+            // Configure audio session for built-in TTS
+            do {
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .default, options: [.duckOthers])
+                try audioSession.setActive(true)
+            } catch {
+                print("❌ Failed to configure audio session for built-in TTS: \(error)")
+            }
+            
+            // Create and configure utterance
             let utterance = AVSpeechUtterance(string: text)
-            utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.8
+            utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.9  // Slightly slower
             utterance.volume = 1.0
             utterance.pitchMultiplier = 1.0
             
+            // Try to use a good English voice
             if let voice = AVSpeechSynthesisVoice(language: "en-US") {
                 utterance.voice = voice
-                print("🎤 Using voice: \(voice.name)")
+                print("✅ Using en-US voice for built-in TTS")
             } else {
-                print("⚠️ Using default voice")
+                print("⚠️ Using default voice for built-in TTS")
             }
             
-            self.speechSynthesizer.delegate = self
-            print("🔊 Starting speech synthesis...")
+            print("🔊 Speaking with built-in TTS: \(text)")
             self.speechSynthesizer.speak(utterance)
+        }
+    }
+
+    // MARK: - Audio Session Configuration
+    private func configureAudioSession() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker])
+            try audioSession.setActive(true)
+            print("✅ Audio session configured successfully for play and record")
+        } catch {
+            print("❌ Failed to configure audio session: \(error)")
         }
     }
     
@@ -1158,6 +1166,44 @@ extension ViewController: AVSpeechSynthesizerDelegate {
     }
 }
 
+// MARK: - Enhanced AVAudioPlayerDelegate
+extension ViewController: AVAudioPlayerDelegate {
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        print("✅ Fanar TTS audio finished playing successfully: \(flag)")
+        if !flag {
+            print("⚠️ Audio playback was not successful")
+        }
+        
+        // Clean up
+        audioPlayer = nil
+        
+        // Restore audio session
+        configureAudioSession()
+    }
+    
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        if let error = error {
+            print("❌ Audio player decode error: \(error)")
+            if let nsError = error as NSError? {
+                print("❌ Decode error domain: \(nsError.domain)")
+                print("❌ Decode error code: \(nsError.code)")
+            }
+        }
+        
+        // Clean up and potentially retry with built-in TTS
+        audioPlayer = nil
+    }
+    
+    func audioPlayerBeginInterruption(_ player: AVAudioPlayer) {
+        print("⚠️ Audio playback interrupted")
+    }
+    
+    func audioPlayerEndInterruption(_ player: AVAudioPlayer, withOptions flags: Int) {
+        print("✅ Audio interruption ended, resuming playback")
+        player.play()
+    }
+}
+
 // MARK: - Extensions
 extension ViewController: UIPopoverPresentationControllerDelegate {
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
@@ -1180,12 +1226,5 @@ extension ViewController: UIPopoverPresentationControllerDelegate {
 extension URL {
     var modelName: String {
         return lastPathComponent.replacingOccurrences(of: ".mlmodelc", with: "")
-    }
-}
-
-// Helper extension for array limiting
-extension Array {
-    func take(_ count: Int) -> Array {
-        return Array(self.prefix(count))
     }
 }
