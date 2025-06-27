@@ -7,6 +7,10 @@ import Speech
 class ViewController: UIViewController {
     
     // MARK: - Properties
+    private var lastVisionCallTime: CFTimeInterval = 0
+    private let visionCallCooldown: CFTimeInterval = 30  // seconds
+    private var lastDetectionSignature: String = ""
+
     private var isSpeaking: Bool = false
     private var pendingModelRequests: Int = 0
     private let modelProcessingQueue = DispatchQueue(label: "com.shu223.modelprocessing", qos: .userInitiated)
@@ -69,7 +73,7 @@ class ViewController: UIViewController {
         speechRecognizer = SFSpeechRecognizer(locale: isArabicMode ? Locale(identifier: "ar-SA") : Locale(identifier: "en-US"))
 
 
-        configureAudioSession(for: .playAndRecord)
+        configureAudioSession()
         setupSpeechRecognition()
         
         let spec = VideoSpec(fps: preferredFps, size: videoSize)
@@ -252,7 +256,7 @@ class ViewController: UIViewController {
         audioEngine.inputNode.removeTap(onBus: 0)
         
         // Restore audio session for playback
-        configureAudioSession(for: .playAndRecord)
+        configureAudioSession()
     }
     
     private func getLastDetectionData() -> [[String: Any]]? {
@@ -573,31 +577,27 @@ class ViewController: UIViewController {
     @available(iOS 12.0, *)
     private func processObjectDetectionObservations(_ results: [VNRecognizedObjectObservation], imageBuffer: CVPixelBuffer, timestamp: CMTime) {
         print("🎯 Detected \(results.count) objects:")
-        
+
         var detectionData: [[String: Any]] = []
         var criticalObstacles: [String] = []
         var pathBlockers: [String] = []
         var environmentalHazards: [String] = []
-        
-        // Process all results, not just high confidence ones
+
         for (index, result) in results.enumerated() {
             let boundingBox = result.boundingBox
-            
-            // Skip objects with confidence below 1% to filter noise
+
             guard let topLabel = result.labels.first?.identifier,
                   result.labels.first?.confidence ?? 0 > 0.01 else {
                 continue
             }
-            
+
             let analysisResult = analyzeObjectPosition(boundingBox: boundingBox)
-            
-            // Log all detections for debugging
+
             print("\n🔸 Object \(index + 1): \(topLabel)")
             print("   Confidence: \(String(format: "%.1f", (result.labels.first?.confidence ?? 0) * 100))%")
             print("   📍 Position: \(analysisResult.horizontal), \(analysisResult.vertical)")
             print("   📏 Distance: \(analysisResult.estimatedDistance)")
-            
-            // Create detection data with all labels
+
             var labels: [[String: Any]] = []
             for label in result.labels {
                 labels.append([
@@ -605,7 +605,7 @@ class ViewController: UIViewController {
                     "confidence": label.confidence * 100
                 ])
             }
-            
+
             let objectData: [String: Any] = [
                 "id": index,
                 "type": "detection",
@@ -630,10 +630,9 @@ class ViewController: UIViewController {
                 ],
                 "category": categorizeObject(topLabel)
             ]
-            
+
             detectionData.append(objectData)
-            
-            // Categorize obstacles
+
             if isMovingVehicle(topLabel) || isDangerousObject(topLabel) {
                 criticalObstacles.append("🚨 \(topLabel) at \(analysisResult.estimatedDistance) - \(analysisResult.preciseDirection)")
             } else if isPathBlocker(topLabel) {
@@ -642,37 +641,50 @@ class ViewController: UIViewController {
                 environmentalHazards.append("⚠️ \(topLabel) at \(analysisResult.estimatedDistance)")
             }
         }
-        
-        // Always update lastDetectionData, even if empty
+
+        // Always update
         self.lastDetectionData = detectionData
-        
-        // Debug: Print detection summary
+
+        // 🔎 Detection Summary
         print("\n📊 Detection Summary:")
         print("Total objects processed: \(detectionData.count)")
         print("Critical obstacles: \(criticalObstacles.count)")
         print("Path blockers: \(pathBlockers.count)")
         print("Environmental hazards: \(environmentalHazards.count)")
-        
-        // Send to API if we have any detections or it's time for periodic update
-        let currentTime = CACurrentMediaTime()
-        if !detectionData.isEmpty || currentTime - lastAPICallTime >= apiCallInterval {
-            lastAPICallTime = currentTime
-            
-            let imageData = convertPixelBufferToImageData(imageBuffer)
-            self.latestCapturedImageData = imageData
-            
-            sendToVisionLanguageAPI(
-                detectionData: detectionData,
-                imageData: imageData,
-                timestamp: timestamp.seconds,
-                criticalObstacles: criticalObstacles,
-                pathBlockers: pathBlockers,
-                environmentalHazards: environmentalHazards,
-                isArabicMode: isArabicMode
-            )
+
+        // 🧠 Compute current detection "signature"
+        let currentSignature = detectionData
+            .compactMap { $0["topLabel"] as? String }
+            .sorted()
+            .joined(separator: ",")
+
+        let now = CACurrentMediaTime()
+        let isSameAsLast = currentSignature == lastDetectionSignature
+        let cooldownPassed = (now - lastVisionCallTime) >= visionCallCooldown
+
+        guard !isSameAsLast || cooldownPassed else {
+            print("⏳ Skipping repeated detection (throttled)")
+            return
         }
-        
-        // Update UI
+
+        // ✅ Update state
+        lastDetectionSignature = currentSignature
+        lastVisionCallTime = now
+
+        let imageData = convertPixelBufferToImageData(imageBuffer)
+        self.latestCapturedImageData = imageData
+
+        sendToVisionLanguageAPI(
+            detectionData: detectionData,
+            imageData: imageData,
+            timestamp: timestamp.seconds,
+            criticalObstacles: criticalObstacles,
+            pathBlockers: pathBlockers,
+            environmentalHazards: environmentalHazards,
+            isArabicMode: isArabicMode
+        )
+
+        // 🖼️ Update UI
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.bbView.observations = results
@@ -681,6 +693,7 @@ class ViewController: UIViewController {
             self.bbView.setNeedsDisplay()
         }
     }
+
     // MARK: - Enhanced Object Analysis with Precise Distance and Direction
     private func analyzeObjectPosition(boundingBox: CGRect) -> (horizontal: String, vertical: String, distance: String, urgency: String, preciseDirection: String, estimatedDistance: String) {
         let x = boundingBox.origin.x
@@ -1268,124 +1281,21 @@ class ViewController: UIViewController {
     }
     
     // MARK: - Enhanced TTS Implementation with Better Error Handling
-    private func speakText(_ text: String) {
-        guard !text.isEmpty else {
-            print("⚠️ Empty text received for speech")
-            return
-        }
-        
-        // Cancel any pending speech immediately
-        speechPriorityQueue.async { [weak self] in
-            guard let self = self else { return }
-            
-            // Synchronize all speech operations on this queue
-            self.speechPriorityQueue.sync {
-                // Stop any current speech or audio
-                self.stopAllSpeech()
-                
-                // Set speaking state
-                self.isSpeaking = true
-                self.configureAudioSession(for: .playback)
-                
-                print("🔊 Requesting speech for: \(text)")
-                
-                // Try Fanar TTS first
-                self.requestTTSFromFanar(text: text) { [weak self] success in
-                    guard let self = self else { return }
-                    
-                    if !success {
-                        print("⚠️ Falling back to built-in TTS")
-                        self.speechPriorityQueue.async {
-                            self.fallbackToBuiltInTTS(text)
-                        }
-                    }
-                }
-            }
-        }
-    }
 
-    private func stopAllSpeech() {
-        // Stop audio player if exists
-        if let player = audioPlayer {
-            player.stop()
-            audioPlayer = nil
-        }
+    private func speakText(_ text: String) {
+        print("🔊 Requesting TTS from Fanar API: \(text)")
         
-        // Stop speech synthesizer if speaking
+        // Stop any currently playing audio
+        audioPlayer?.stop()
+        
+        // Stop built-in speech synthesizer if it's running
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking(at: .immediate)
         }
         
-        isSpeaking = false
-    }
-
-    private func requestTTSFromFanar(text: String, completion: @escaping (Bool) -> Void) {
-        guard let url = URL(string: "\(apiBaseURL)/audio/speech") else {
-            print("❌ Invalid TTS API URL")
-            completion(false)
-            return
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 15.0
-        
-        let ttsRequest: [String: Any] = [
-            "model": "Fanar-Aura-TTS-1",
-            "input": text,
-            "voice": "default"
-        ]
-        
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: ttsRequest)
-            
-            URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-                guard let self = self else {
-                    completion(false)
-                    return
-                }
-                
-                if let error = error {
-                    print("❌ TTS request failed: \(error.localizedDescription)")
-                    completion(false)
-                    return
-                }
-                
-                guard let data = data else {
-                    print("❌ No audio data received")
-                    completion(false)
-                    return
-                }
-                
-                // Play the received audio data
-                DispatchQueue.main.async {
-                    do {
-                        try AVAudioSession.sharedInstance().setCategory(.playback)
-                        try AVAudioSession.sharedInstance().setActive(true)
-                        
-                        self.audioPlayer = try AVAudioPlayer(data: data)
-                        self.audioPlayer?.delegate = self
-                        self.audioPlayer?.prepareToPlay()
-                        
-                        if self.audioPlayer?.play() == true {
-                            print("✅ Playing TTS audio")
-                            completion(true)
-                        } else {
-                            print("❌ Failed to play audio")
-                            completion(false)
-                        }
-                    } catch {
-                        print("❌ Audio playback error: \(error)")
-                        completion(false)
-                    }
-                }
-            }.resume()
-            
-        } catch {
-            print("❌ Failed to create TTS request: \(error)")
-            completion(false)
+        // Use async queue for TTS request
+        ttsQueue.async { [weak self] in
+            self?.requestTTSFromFanar(text: text)
         }
     }
 
@@ -1498,31 +1408,6 @@ class ViewController: UIViewController {
             fallbackToBuiltInTTS(text)
         }
     }
-    private func playReceivedAudio(data: Data, text: String, completion: @escaping (Bool) -> Void) {
-        do {
-            // Configure audio session
-            try AVAudioSession.sharedInstance().setCategory(.playback)
-            try AVAudioSession.sharedInstance().setActive(true)
-            
-            // Initialize player
-            audioPlayer = try AVAudioPlayer(data: data)
-            audioPlayer?.delegate = self
-            audioPlayer?.prepareToPlay()
-            
-            // Start playback
-            if audioPlayer?.play() == true {
-                print("✅ Playing TTS audio for: \(text)")
-                completion(true)
-            } else {
-                print("❌ Failed to start audio playback")
-                completion(false)
-            }
-        } catch {
-            print("❌ Audio playback error: \(error)")
-            completion(false)
-        }
-    }
-    
 
     // ✅ Enhanced audio playback to handle MP3 format from Fanar API
     private func playAudioData(_ audioData: Data, originalText: String) {
@@ -1532,55 +1417,56 @@ class ViewController: UIViewController {
             guard let self = self else { return }
             
             do {
-                // Configure audio session BEFORE creating player
+                // Setup audio session
                 let audioSession = AVAudioSession.sharedInstance()
                 try audioSession.setCategory(.playback, mode: .default, options: [.duckOthers])
                 try audioSession.setActive(true)
                 print("✅ Audio session configured for playback")
-                
-                // Create audio player with the received data
+
+                // Create player
                 self.audioPlayer = try AVAudioPlayer(data: audioData)
-                
                 guard let player = self.audioPlayer else {
-                    print("❌ Failed to create audio player")
+                    print("❌ Could not create audio player instance")
+                    try? audioSession.setActive(false)
                     self.fallbackToBuiltInTTS(originalText)
                     return
                 }
                 
-                // Configure player
+                // Setup player
                 player.delegate = self
                 player.volume = 1.0
                 player.prepareToPlay()
+
+                print("🎵 Audio player ready (duration: \(player.duration) sec)")
                 
-                print("🎵 Audio player created successfully")
-                print("🎵 Audio duration: \(player.duration) seconds")
-                
-                // Play the audio
-                let success = player.play()
-                if success {
-                    print("✅ Fanar TTS audio playback started for: \(originalText)")
+                // Try to play
+                if player.play() {
+                    print("✅ Fanar TTS audio playback started: \"\(originalText)\"")
                 } else {
-                    print("❌ Failed to start audio playback")
-                    self.fallbackToBuiltInTTS(originalText)
-                }
-                
-            } catch {
-                print("❌ Failed to create/configure audio player: \(error)")
-                print("❌ Error details: \(error.localizedDescription)")
-                
-                // Log more specific error information
-                if let nsError = error as NSError? {
-                    print("❌ Error domain: \(nsError.domain)")
-                    print("❌ Error code: \(nsError.code)")
-                    if nsError.domain == NSOSStatusErrorDomain {
-                        print("❌ OSStatus error - likely audio format issue")
+                    print("⚠️ Playback failed, retrying once...")
+                    player.prepareToPlay()
+                    if !player.play() {
+                        print("❌ Playback retry failed")
+                        try? audioSession.setActive(false)
+                        self.fallbackToBuiltInTTS(originalText)
                     }
                 }
-                
+
+            } catch {
+                print("❌ Error during audio setup/playback: \(error.localizedDescription)")
+                if let nsError = error as NSError? {
+                    print("❌ Error domain: \(nsError.domain), code: \(nsError.code)")
+                    if nsError.domain == NSOSStatusErrorDomain {
+                        print("❌ Likely audio format issue (OSStatus error)")
+                    }
+                }
+
+                try? AVAudioSession.sharedInstance().setActive(false)
                 self.fallbackToBuiltInTTS(originalText)
             }
         }
     }
+
 
     // ✅ Test function you can call to verify TTS is working
     private func testFanarTTS() {
@@ -1589,31 +1475,42 @@ class ViewController: UIViewController {
     }
     
     private func fallbackToBuiltInTTS(_ text: String) {
-        // 1. Ensure clean state
-        stopAllSpeech()
+        print("⚠️ Falling back to built-in TTS for: \(text)")
         
-        // 2. Configure audio session
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback)
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("❌ Audio session error: \(error)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Stop any existing speech
+            if self.speechSynthesizer.isSpeaking {
+                self.speechSynthesizer.stopSpeaking(at: .immediate)
+            }
+            
+            // Configure audio session for built-in TTS
+            do {
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .default, options: [.duckOthers])
+                try audioSession.setActive(true)
+            } catch {
+                print("❌ Failed to configure audio session for built-in TTS: \(error)")
+            }
+            
+            // Create and configure utterance
+            let utterance = AVSpeechUtterance(string: text)
+            utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.9  // Slightly slower
+            utterance.volume = 1.0
+            utterance.pitchMultiplier = 1.0
+            
+            // Try to use a good English voice
+            if let voice = AVSpeechSynthesisVoice(language: "en-US") {
+                utterance.voice = voice
+                print("✅ Using en-US voice for built-in TTS")
+            } else {
+                print("⚠️ Using default voice for built-in TTS")
+            }
+            
+            print("🔊 Speaking with built-in TTS: \(text)")
+            self.speechSynthesizer.speak(utterance)
         }
-        
-        // 3. Create utterance
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.rate = 0.5
-        utterance.volume = 1.0
-        
-        // 4. Set appropriate voice
-        if let voice = AVSpeechSynthesisVoice(language: isArabicMode ? "ar-SA" : "en-US") {
-            utterance.voice = voice
-        }
-        
-        // 5. Start speaking
-        isSpeaking = true
-        speechSynthesizer.speak(utterance)
-        print("🔊 Using system TTS for: \(text)")
     }
 
     // MARK: - Audio Session Configuration
@@ -1623,20 +1520,14 @@ class ViewController: UIViewController {
         case playAndRecord
     }
 
-    private func configureAudioSession(for mode: AudioSessionMode) {
+    private func configureAudioSession() {
         do {
-            let session = AVAudioSession.sharedInstance()
-            switch mode {
-            case .playback:
-                try session.setCategory(.playback, options: [.duckOthers])
-            case .recording:
-                try session.setCategory(.record, options: .duckOthers)
-            case .playAndRecord:
-                try session.setCategory(.playAndRecord, options: [.defaultToSpeaker, .allowBluetooth])
-            }
-            try session.setActive(true)
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker])
+            try audioSession.setActive(true)
+            print("✅ Audio session configured successfully for play and record")
         } catch {
-            print("❌ Audio session error: \(error)")
+            print("❌ Failed to configure audio session: \(error)")
         }
     }
     
@@ -1655,39 +1546,62 @@ class ViewController: UIViewController {
         updateCropAndScaleOption()
     }
 }
-// MARK: - AVAudioPlayerDelegate
-extension ViewController: AVAudioPlayerDelegate {
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        speechPriorityQueue.async { [weak self] in
-            self?.isSpeaking = false
-            self?.audioPlayer = nil
-            print("✅ Audio finished")
-        }
-    }
-    
-    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        speechPriorityQueue.async { [weak self] in
-            self?.isSpeaking = false
-            self?.audioPlayer = nil
-            print("❌ Audio error: \(error?.localizedDescription ?? "Unknown")")
-        }
-    }
-}
 
 // MARK: - AVSpeechSynthesizerDelegate
 extension ViewController: AVSpeechSynthesizerDelegate {
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        print("🔊 Speech started: \(utterance.speechString)")
+    }
+    
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        speechPriorityQueue.async { [weak self] in
-            self?.isSpeaking = false
-            print("✅ Speech finished")
-        }
+        print("✅ Speech finished: \(utterance.speechString)")
     }
     
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        speechPriorityQueue.async { [weak self] in
-            self?.isSpeaking = false
-            print("❌ Speech cancelled")
+        print("❌ Speech cancelled: \(utterance.speechString)")
+    }
+    
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
+        let substring = (utterance.speechString as NSString).substring(with: characterRange)
+        print("🗣️ Speaking: \(substring)")
+    }
+}
+
+// MARK: - Enhanced AVAudioPlayerDelegate
+extension ViewController: AVAudioPlayerDelegate {
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        print("✅ Fanar TTS audio finished playing successfully: \(flag)")
+        if !flag {
+            print("⚠️ Audio playback was not successful")
         }
+        
+        // Clean up
+        audioPlayer = nil
+        
+        // Restore audio session
+        configureAudioSession()
+    }
+    
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        if let error = error {
+            print("❌ Audio player decode error: \(error)")
+            if let nsError = error as NSError? {
+                print("❌ Decode error domain: \(nsError.domain)")
+                print("❌ Decode error code: \(nsError.code)")
+            }
+        }
+        
+        // Clean up and potentially retry with built-in TTS
+        audioPlayer = nil
+    }
+    
+    func audioPlayerBeginInterruption(_ player: AVAudioPlayer) {
+        print("⚠️ Audio playback interrupted")
+    }
+    
+    func audioPlayerEndInterruption(_ player: AVAudioPlayer, withOptions flags: Int) {
+        print("✅ Audio interruption ended, resuming playback")
+        player.play()
     }
 }
 
