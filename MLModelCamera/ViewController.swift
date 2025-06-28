@@ -7,6 +7,8 @@ import Speech
 class ViewController: UIViewController {
     
     // MARK: - Properties
+    private var isProcessingVoiceRequest = false
+    private var shouldDelayNextVisionCall = false
     var speechRecognizer: SFSpeechRecognizer?
     var isArabicMode: Bool = false
     private var videoCapture: VideoCapture!
@@ -17,12 +19,13 @@ class ViewController: UIViewController {
     private let videoSize = CGSize(width: 1280, height: 720)
     private let preferredFps: Int32 = 2
     
+    
     private var modelUrls: [URL]!
     private var selectedVNModel: VNCoreMLModel?
     private var selectedModel: MLModel?
     
     private var lastAPICallTime: CFTimeInterval = 0
-    private let apiCallInterval: CFTimeInterval = 30.0
+    private let apiCallInterval: CFTimeInterval = 20.0
     private let apiKey = "fmFrMl3wHnB9SFnb8bzxNFpGCVE18Wcz"
     private let apiBaseURL = "https://api.fanar.qa/v1"
     
@@ -140,61 +143,102 @@ class ViewController: UIViewController {
     
     // MARK: - Speech Recognition
     private func setupSpeechRecognition() {
+        // Initialize the speech recognizer with the current locale
+        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: isArabicMode ? "ar-SA" : "en-US"))
+        
         SFSpeechRecognizer.requestAuthorization { authStatus in
             DispatchQueue.main.async {
                 switch authStatus {
                 case .authorized:
-                    print("Speech recognition authorized")
+                    print("✅ Speech recognition authorized")
+                    // Make sure the recognizer is available
+                    if self.speechRecognizer == nil {
+                        print("❌ Speech recognizer is nil after authorization")
+                    } else if !self.speechRecognizer!.isAvailable {
+                        print("❌ Speech recognizer is not available")
+                    } else {
+                        print("✅ Speech recognizer is ready")
+                    }
                 case .denied:
-                    print("User denied access to speech recognition")
+                    print("❌ User denied access to speech recognition")
                 case .restricted:
-                    print("Speech recognition restricted on this device")
+                    print("❌ Speech recognition restricted on this device")
                 case .notDetermined:
-                    print("Speech recognition not yet authorized")
+                    print("❌ Speech recognition not yet authorized")
                 @unknown default:
-                    fatalError()
+                    print("❌ Unknown speech recognition authorization status")
                 }
             }
         }
     }
     
     @objc private func handleMicrophoneLongPress(_ gesture: UILongPressGestureRecognizer) {
+        print("🎤 Microphone gesture state: \(gesture.state.rawValue)")
+        
         switch gesture.state {
         case .began:
+            print("🎤 Long press began - starting to listen")
             microphoneButton.isHighlighted = true
             startListening()
         case .ended, .cancelled, .failed:
+            print("🎤 Long press ended - stopping listening")
             microphoneButton.isHighlighted = false
             stopListening()
         default:
             break
         }
     }
-    
+
     private func startListening() {
+        print("🎤 startListening() called")
+        
+        // Check if already processing
+        if isProcessingVoiceRequest {
+            print("❌ Already processing voice request, ignoring")
+            return
+        }
+        
         // Stop any current speech
         if speechSynthesizer.isSpeaking {
+            print("🔇 Stopping current speech synthesis")
             speechSynthesizer.stopSpeaking(at: .immediate)
         }
+        
+        // Check speech recognizer availability
+        guard let recognizer = speechRecognizer else {
+            print("❌ Speech recognizer is nil")
+            return
+        }
+        
+        guard recognizer.isAvailable else {
+            print("❌ Speech recognizer is not available")
+            return
+        }
+        
+        print("✅ Speech recognizer is ready, setting up audio session")
         
         // Configure audio session for recording
         do {
             try AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: .duckOthers)
             try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ Audio session configured for recording")
         } catch {
-            print("Audio session setup error: \(error)")
+            print("❌ Audio session setup error: \(error)")
             return
         }
         
         // Cancel any existing recognition task
         recognitionTask?.cancel()
         recognitionTask = nil
+        print("✅ Previous recognition task cancelled")
         
         // Setup audio engine
         let inputNode = audioEngine.inputNode
         inputNode.removeTap(onBus: 0)
         
         let recordingFormat = inputNode.outputFormat(forBus: 0)
+        print("🎵 Recording format: \(recordingFormat)")
+        
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
             self.recognitionRequest?.append(buffer)
         }
@@ -202,31 +246,30 @@ class ViewController: UIViewController {
         // Prepare recognition request
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
-            fatalError("Unable to create recognition request")
+            print("❌ Unable to create recognition request")
+            return
         }
         
         recognitionRequest.shouldReportPartialResults = true
+        print("✅ Recognition request created")
         
         // Start recognition task
-        guard let recognizer = speechRecognizer else {
-            print("Speech recognizer not available")
-            return
-        }
-
         recognitionTask = recognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             guard let self = self else { return }
             
             if let result = result {
                 let transcript = result.bestTranscription.formattedString
-                print("User said: \(transcript)")
+                print("🗣️ Transcript: '\(transcript)' (isFinal: \(result.isFinal))")
                 
                 // If this is the final result, send to API
                 if result.isFinal {
+                    print("✅ Final transcript received, sending to API")
                     self.sendVoicePromptToAPI(transcript: transcript, imageData: self.latestCapturedImageData)
                 }
             }
             
-            if error != nil {
+            if let error = error {
+                print("❌ Speech recognition error: \(error)")
                 self.audioEngine.stop()
                 inputNode.removeTap(onBus: 0)
                 self.recognitionRequest = nil
@@ -238,9 +281,9 @@ class ViewController: UIViewController {
         audioEngine.prepare()
         do {
             try audioEngine.start()
-            print("Listening...")
+            print("✅ Audio engine started - now listening...")
         } catch {
-            print("Audio engine start error: \(error)")
+            print("❌ Audio engine start error: \(error)")
         }
     }
 
@@ -286,14 +329,16 @@ class ViewController: UIViewController {
 
     
     private func sendVoicePromptToAPI(transcript: String, imageData: Data? = nil) {
-        print("Sending voice prompt to API: \(transcript)")
-        //prompt
+        // Set voice processing flag
+        isProcessingVoiceRequest = true
         
+        print("🔊 Sending voice prompt to API: \(transcript)")
         
         // Validate transcript
         guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             print("❌ Empty transcript, not sending to API")
             speakText("I didn't catch that, please try again.")
+            isProcessingVoiceRequest = false
             return
         }
         
@@ -302,7 +347,6 @@ class ViewController: UIViewController {
             [
                 "type": "text",
                 "text": buildPrompt(from: transcript)
-
             ]
         ]
         
@@ -324,25 +368,28 @@ class ViewController: UIViewController {
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are an advanced navigation assistant for visually impaired users. Respond to the user's query with precise, actionable guidance. Do not navigate, rather answer the question pomrptly and clearly. Don't lose focus. Keep responses under 30 words."
+                    "content": """
+                    You are a visual assistant. When asked about specific objects:
+                    1. FIRST directly answer the question about what was asked
+                    2. THEN optionally mention any relevant obstacles
+                    3. Keep responses under 15 words unless more detail is needed
+                    """
                 ],
                 [
                     "role": "user",
                     "content": messageContent
                 ]
             ],
-            "temperature": 0.2,
+            "temperature": 0.1,  // Lower for more precise answers
             "max_tokens": 100
         ]
-        
         performVoiceAPICall(requestData: llmRequest)
     }
-
-
 
     private func performVoiceAPICall(requestData: [String: Any]) {
         guard let url = URL(string: "\(apiBaseURL)/chat/completions") else {
             print("❌ Invalid API URL")
+            isProcessingVoiceRequest = false
             return
         }
         
@@ -355,22 +402,20 @@ class ViewController: UIViewController {
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: requestData)
             print("📤 Voice request payload size: \(request.httpBody?.count ?? 0) bytes")
-            
-            // Log the actual request being sent
-            if let debugData = try? JSONSerialization.data(withJSONObject: requestData, options: .prettyPrinted),
-               let debugString = String(data: debugData, encoding: .utf8) {
-                print("📋 Voice request: \(debugString)")
-            }
-            
         } catch {
             print("❌ Failed to serialize voice request data: \(error)")
             speakText("Voice processing error, please try again.")
+            isProcessingVoiceRequest = false
             return
         }
         
         print("📤 Sending Voice API request...")
         
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            defer {
+                self?.isProcessingVoiceRequest = false
+            }
+            
             if let error = error {
                 print("❌ Voice API call failed: \(error)")
                 self?.speakText("Voice service temporarily unavailable.")
@@ -441,8 +486,7 @@ class ViewController: UIViewController {
                 self?.speakText("Voice processing complete.")
             }
         }.resume()
-    }
-    // MARK: - Model Selection
+    }    // MARK: - Model Selection
     private func showActionSheet() {
         let alert = UIAlertController(title: "Models", message: "Choose a model", preferredStyle: .actionSheet)
         let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
@@ -504,6 +548,12 @@ class ViewController: UIViewController {
     // MARK: - Enhanced Object Processing with Spatial Context
     @available(iOS 12.0, *)
     private func processObjectDetectionObservations(_ results: [VNRecognizedObjectObservation], imageBuffer: CVPixelBuffer, timestamp: CMTime) {
+        // Skip processing if we're handling a voice request
+        guard !isProcessingVoiceRequest else {
+            print("🔇 Skipping vision processing during voice request")
+            return
+        }
+        
         print("🎯 Detected \(results.count) objects:")
         
         var detectionData: [[String: Any]] = []
@@ -522,8 +572,6 @@ class ViewController: UIViewController {
             let screenHeight = boundingBox.size.height * CGFloat(imageHeight)
             
             let analysisResult = analyzeObjectPosition(boundingBox: boundingBox)
-         
-
             
             // Trigger vibration for high urgency OR very close objects
             if analysisResult.urgency.contains("IMMEDIATE") || analysisResult.distance == "very close" {
@@ -541,15 +589,6 @@ class ViewController: UIViewController {
             var labels: [[String: Any]] = []
             var topLabel = "unknown"
             var topConfidence: Float = 0
-            
-            if analysisResult.urgency.contains("IMMEDIATE") ||
-               analysisResult.distance == "very close" ||
-               isMovingVehicle(topLabel) {
-                DispatchQueue.main.async {
-                    self.feedbackGenerator.impactOccurred()
-                }
-            }
-
             
             for (labelIndex, label) in result.labels.enumerated() {
                 let confidence = label.confidence * 100
@@ -612,7 +651,7 @@ class ViewController: UIViewController {
         }
         
         let currentTime = CACurrentMediaTime()
-        if currentTime - lastAPICallTime >= apiCallInterval {
+        if currentTime - lastAPICallTime >= apiCallInterval && !isProcessingVoiceRequest {
             lastAPICallTime = currentTime
             
             print("\n🚀 SENDING ENHANCED SPATIAL ANALYSIS TO API:")
@@ -623,6 +662,7 @@ class ViewController: UIViewController {
             
             let imageData = convertPixelBufferToImageData(imageBuffer)
             self.latestCapturedImageData = imageData
+            
             sendToVisionLanguageAPI(
                 detectionData: detectionData,
                 imageData: imageData,
@@ -807,7 +847,7 @@ class ViewController: UIViewController {
         let systemPromptContent = isArabicMode ? """
     أنت مساعد ملاحة للمكفوفين. أولاً، صف البيئة المحيطة بناءً على الكائنات المكتشفة (مثل "شجرة أمامك على بعد ٣ أمتار"). ثم، قدم إرشادات واضحة ("اتجه يساراً ٣ خطوات ثم تابع للأمام"). لا تعتمد على الصورة إلا كمصدر داعم. لا تتجاوز ٣٥ كلمة.
     """ : """
-    You are a navigation assistant for blind users. First describe the scene using detected objects (e.g., “a car 3 meters ahead on your right”). Then guide the user clearly (e.g., “step 2 meters left”). Use the image only as secondary context. Keep it under 35 words.
+    You are a navigation assistant for blind users. First describe the scene using all detected objects (e.g., “3 cars are detected,there is a car 3 meters ahead on your right”). Then guide the user clearly (e.g., “step 2 meters left”). Use the image only as secondary context. Keep it under 50 words.
     """
 
         let llmRequest: [String: Any] = [
@@ -1403,9 +1443,9 @@ class ViewController: UIViewController {
     private func configureAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker])
-            try audioSession.setActive(true)
-            print("✅ Audio session configured successfully for play and record")
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ Audio session configured successfully")
         } catch {
             print("❌ Failed to configure audio session: \(error)")
         }

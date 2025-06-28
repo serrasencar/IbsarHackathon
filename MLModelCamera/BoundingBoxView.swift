@@ -21,26 +21,28 @@ class BoundingBoxView: UIView {
     }
     
     override func draw(_ rect: CGRect) {
-        guard observations != nil && observations.count > 0 else { return }
+        guard let currentObservations = observations, currentObservations.count > 0 else { return }
         subviews.forEach({ $0.removeFromSuperview() })
 
-        let context = UIGraphicsGetCurrentContext()!
-        
-        for i in 0..<observations.count {
-            let observation = observations[i]
-            var color = UIColor(hue: CGFloat(i) / CGFloat(observations.count), saturation: 1, brightness: 1, alpha: 1)
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+
+        for i in 0..<currentObservations.count {
+            let observation = currentObservations[i]
+            var color = UIColor(hue: CGFloat(i) / CGFloat(currentObservations.count), saturation: 1, brightness: 1, alpha: 1)
+
             if #available(iOS 12.0, *), let recognizedObjectObservation = observation as? VNRecognizedObjectObservation {
-                let firstLabelHash = recognizedObjectObservation.labels.first?.identifier.hashValue ?? 0.hashValue
+                let firstLabelHash = recognizedObjectObservation.labels.first?.identifier.hashValue ?? 0
                 color = UIColor(hue: (CGFloat(firstLabelHash % 256) / 512.0) + 1.0, saturation: 1, brightness: 1, alpha: 1)
             }
 
             let rect = drawBoundingBox(context: context, observation: observation, color: color)
-            
+
             if #available(iOS 12.0, *), let recognizedObjectObservation = observation as? VNRecognizedObjectObservation {
                 addLabel(on: rect, observation: recognizedObjectObservation, color: color)
             }
         }
     }
+
     
     private func drawBoundingBox(context: CGContext, observation: VNDetectedObjectObservation, color: UIColor) -> CGRect {
         let convertedRect = VNImageRectForNormalizedRect(observation.boundingBox.flipped, Int(imageRect.width), Int(imageRect.height))
