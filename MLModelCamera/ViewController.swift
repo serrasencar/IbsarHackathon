@@ -845,10 +845,12 @@ class ViewController: UIViewController {
 
         // NEW: Improved system prompt
         let systemPromptContent = isArabicMode ? """
-    أنت مساعد ملاحة للمكفوفين. أولاً، صف البيئة المحيطة بناءً على الكائنات المكتشفة (مثل "شجرة أمامك على بعد ٣ أمتار"). ثم، قدم إرشادات واضحة ("اتجه يساراً ٣ خطوات ثم تابع للأمام"). لا تعتمد على الصورة إلا كمصدر داعم. لا تتجاوز ٣٥ كلمة.
-    """ : """
-    You are a navigation assistant for blind users. First describe the scene using all detected objects (e.g., “3 cars are detected,there is a car 3 meters ahead on your right”). Then guide the user clearly (e.g., “step 2 meters left”). Use the image only as secondary context. Keep it under 50 words.
-    """
+        أنت مساعد ملاحة للمكفوفين. صف البيئة باستخدام الكائنات المكتشفة (مثال: "شجرة على بعد ٣ أمتار"). ثم قدّم توجيهاً واضحاً (مثال: "تحرك يساراً ٣ خطوات"). لا تتجاوز ٣٥ كلمة.
+        """ : """
+        You are a navigation assistant for blind users. Describe the scene using detected objects (e.g., “A tree is 3 meters ahead”). Then give clear guidance (e.g., “Take 3 steps left”). Keep it under 35 words.
+        """
+
+
 
         let llmRequest: [String: Any] = [
             "model": "Fanar-Oryx-IVU-1",
